@@ -1,0 +1,725 @@
+#libs
+```{r}
+library(phyloseq)
+library(microbiome)
+library(pheatmap)
+library(grid)
+library(gtable)
+```
+
+# load data and transform
+```{r}
+#Read phyloseq
+ps <-  readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
+ps_obj <- ps
+
+
+# ==============================================================================
+# Filter specimens
+print('After specimen selection:')
+ps_obj
+# ==============================================================================
+# Filter taxa
+prevalence <- 10/100
+detection <- 1/100
+taxas <- core_members(ps_obj, detection = detection, prevalence = prevalence, include.lowest = F)
+ps_obj <- prune_taxa(taxas, ps_obj)
+
+print('After taxa filtering:')
+ps_obj
+
+
+# ==============================================================================
+# Agglomeration
+tax_glom_level <- 'Species'
+ps_obj <- speedyseq::tax_glom(ps_obj, tax_glom_level, NArm =T)
+print('After agglomeration:')
+ps_obj
+
+transformation <- 'clr'
+ps_obj <- microbiome::transform(ps_obj, transformation)
+
+prepare_count_table_simple <- function(ps_obj) {
+  # Get the OTU table (counts)
+  otu_matrix <- as(otu_table(ps_obj), 'matrix')
+  
+  # Transpose if taxa are rows (make samples as rows, taxa as columns)
+  if (taxa_are_rows(ps_obj)) {
+    otu_matrix <- t(otu_matrix)
+  }
+  
+  # Get taxonomy table
+  taxa_matrix <- as(tax_table(ps_obj), 'matrix')
+  
+  # Create simple names: Family.Genus.Species (with NA if missing)
+  simple_names <- apply(taxa_matrix, 1, function(x) {
+    # Extract family, genus, species (will be NA if missing)
+    #family <- ifelse(is.na(x['Family']), "NA", x['Family'])
+    #genus <- ifelse(is.na(x['Genus']), "NA", x['Genus'])
+    species <- ifelse(is.na(x['Species']), "NA", x['Species'])
+    
+    # Remove problematic characters
+    #family <- gsub('/', '', gsub("-", "", family))
+    #genus <- gsub('/', '', gsub("-", "", genus))
+    species <- gsub('/', '', gsub("-", "", species))
+    
+    # Combine with underscores
+    #paste(family, genus, species, sep = "_")
+    paste(species, sep = "_")
+  })
+  
+  # Set column names
+  colnames(otu_matrix) <- simple_names
+  
+  return(otu_matrix)
+}
+
+# Run the function
+count_mtrx <- prepare_count_table_simple(ps_obj)
+
+# View the result
+head(count_mtrx[, 1:5])  # First 5 columns
+dim(count_mtrx)  # Dimensions (samples x taxa)
+
+# ==============================================================================
+# Transform counts
+
+
+taxa_name_func <- function(x) {paste0(x['ASV'],  '_' , gsub('/', '', gsub("-", "", x['Species'])))}
+# ==============================================================================
+# Prepare metadata table
+ps_meta <- as(sample_data(ps_obj), 'data.frame')
+categorical_vars <- names(ps_meta)[sapply(ps_meta, function(x) is.factor(x) || is.character(x))]
+
+# Remove 'timepoint' from the list if it exists
+# Remove 'Group' from categorical_vars since that's our grouping variable
+categorical_vars <- setdiff(categorical_vars, c('Age',"Group", 'Height', 'No_Patient','Weight','Timepoint','SampleID'))
+#cols_of_interest =c('Antibiotics_treatment_in_last_6_months','Treatment_of_periodontitis', 'Sex', 'Age_group', 'BMI_group', 'Stage_of_severity_of_periodontitis', 'Smoking_status','Arterial hypertension')
+meta_for_heatmap <- ps_meta[, (names(ps_meta) %in% categorical_vars)]
+for (col in categorical_vars) {
+  if (col %in% colnames(ps_meta) && (is.character(ps_meta[[col]]) || is.integer(ps_meta[[col]]))) {
+    ps_obj@sam_data[[col]] <- as.factor(ps_obj@sam_data[[col]])
+  }
+}
+count_mtrx <- prepare_count_table_simple(ps_obj)
+ordered_counts <-count_mtrx[rownames(meta_for_heatmap),]
+taxa_var <- apply(count_mtrx, 2, var, na.rm = TRUE)
+top_taxa <- names(sort(taxa_var, decreasing = TRUE)[1:100])  # keep top 50
+count_mtrx <- count_mtrx[, top_taxa, drop = FALSE]
+
+# ==============================================================================
+# Plot Heatmap
+clustering_distance_rows <- 'euclidean'
+# clustering_distance_rows <- 'binary'
+# clustering_distance_rows <- 'correlation'
+
+clustering_distance_cols <- 'euclidean'
+# clustering_distance_cols <- 'binary'
+# clustering_distance_cols <- 'correlation'
+
+save_path <- '/home/sonec_iv/'
+filename <- paste0(save_path, 'RSF_WGS_MOD3_tax_glom_level_', tax_glom_level, '_transform_', transformation, '_det', detection, '_prev',prevalence,  '_clust_dist_cols_', clustering_distance_cols,  '_clust_dist_rows_', clustering_distance_rows, '.pdf')
+```
+
+# Heatmap ORIG
+```{r}
+p <-pheatmap(t(count_mtrx),
+             cluster_rows = T, treeheight_row  = 90, treeheight_col = 90,
+             cluster_cols = T,
+             fontsize=48,
+             annotation_col = meta_for_heatmap,
+             silent=F,
+             clustering_distance_rows=clustering_distance_rows,
+             clustering_distance_cols=clustering_distance_cols,
+             clustering_method='ward.D2',
+             gaps_col = breaks,
+             fontsize_row=48,
+             fontsize_col=48,
+             show_rownames = T,
+             show_colnames = T,
+             border_color=NA,
+             width=140, height = 110,
+             filename = filename)
+p
+```
+
+
+# heatmap MOD
+```{r}
+# ==============================================================================
+# Full Heatmap Script with Custom Sample Order, Colored Labels, Enlarged Legend
+# and Elongated Colorbar
+# ==============================================================================
+# --- 1. Prepare custom column order: sort by base ID then suffix ---
+sample_names <- rownames(count_mtrx)                     # samples as rows
+base_id <- gsub("-[12]$", "", sample_names)              # remove trailing -1/-2
+suffix <- gsub(".*-", "", sample_names)
+order_df <- data.frame(sample = sample_names,
+                       base   = base_id,
+                       suffix = suffix)
+order_df$suffix_num <- as.numeric(suffix)                # numeric for proper sort
+order_df <- order_df[order(order_df$base, order_df$suffix_num), ]
+sorted_samples <- order_df$sample
+
+# --- 2. Reorder matrices accordingly ---
+count_mtrx_ordered <- count_mtrx[sorted_samples, ]
+meta_for_heatmap_ordered <- meta_for_heatmap[sorted_samples, , drop = FALSE]
+
+# --- 3. Column label colours (blue for -1, red for -2) ---
+col_label_colors <- ifelse(grepl("-1", sorted_samples), "blue",
+                           ifelse(grepl("-2", sorted_samples), "red", "black"))
+
+# --- 4. Create pheatmap object (no auto‑save) ---
+p <- pheatmap(t(count_mtrx_ordered),                     # transpose: samples as columns
+             cluster_rows = TRUE,
+             cluster_cols = FALSE,
+             order_cols = sorted_samples,                # use our custom order
+             treeheight_row = 90,
+             treeheight_col = 0,                          # no column dendrogram
+             fontsize = 32,                               # base font size
+             annotation_col = meta_for_heatmap_ordered,
+             silent = TRUE,
+             clustering_distance_rows = clustering_distance_rows,
+             clustering_method = 'ward.D2',
+             # gaps_col = breaks,                         # optional, if defined
+             fontsize_row = 32,
+             fontsize_col = 32,
+             show_rownames = TRUE,
+             show_colnames = TRUE,
+             border_color = "white",                      # cell spacing
+             width = 140, height = 110,
+             filename = NA)
+
+# --- 5. Colour column labels (using layout table) ---
+col_names_idx <- which(p$gtable$layout$name == "col_names")
+if (length(col_names_idx) == 1) {
+  col_grob <- p$gtable$grobs[[col_names_idx]]
+  if (inherits(col_grob, "text")) {
+    col_grob$gp$col <- col_label_colors
+    p$gtable$grobs[[col_names_idx]] <- col_grob
+  }
+}
+
+# --- 6. Increase legend text size to 48 ---
+legend_idx <- which(p$gtable$layout$name %in% c("legend", "guide-box"))
+for (idx in legend_idx) {
+  leg_grob <- p$gtable$grobs[[idx]]
+  
+  # Recursively find all text grobs inside the legend
+  if (inherits(leg_grob, "gTree")) {
+    text_children <- which(sapply(leg_grob$children,
+                                  function(child) inherits(child, "text")))
+    for (j in text_children) {
+      leg_grob$children[[j]]$gp$fontsize <- 32
+    }
+  } else if (inherits(leg_grob, "text")) {
+    leg_grob$gp$fontsize <- 32
+  }
+  
+  p$gtable$grobs[[idx]] <- leg_grob
+}
+
+# --- 7. Move the legend 1 inch left and 0.5 inch down ---
+for (idx in legend_idx) {
+  leg_grob <- p$gtable$grobs[[idx]]
+  
+  if (is.null(leg_grob$vp)) {
+    leg_grob$vp <- viewport(x = 0.5, y = 0.5, just = c("center", "center"))
+  }
+  leg_grob$vp$x <- unit(0.5, "npc") + unit(-1, "inches")   # left
+  leg_grob$vp$y <- unit(0.5, "npc") + unit(-0.5, "inches") # down
+  leg_grob$vp$just <- c("center", "center")
+  
+  p$gtable$grobs[[idx]] <- leg_grob
+}
+
+# --- 8. Lengthen the colorbar inside the legend (double its height) ---
+for (idx in legend_idx) {
+  leg_grob <- p$gtable$grobs[[idx]]
+  
+  if (inherits(leg_grob, "gTree")) {
+    # Find all raster grobs (the colorbar is a rasterGrob)
+    raster_children <- which(sapply(leg_grob$children,
+                                    function(child) inherits(child, "rastergrob")))
+    for (r in raster_children) {
+      # Double the height of the raster
+      if (!is.null(leg_grob$children[[r]]$height)) {
+        leg_grob$children[[r]]$height <- leg_grob$children[[r]]$height * 6
+      } else {
+        # If height not set, assign a default and double
+        leg_grob$children[[r]]$height <- unit(1, "inches") * 6
+      }
+      # Ensure the raster is still centered
+      leg_grob$children[[r]]$y <- unit(0.5, "npc")
+      leg_grob$children[[r]]$just <- "center"
+    }
+  }
+  
+  p$gtable$grobs[[idx]] <- leg_grob
+}
+
+# --- 9. Save and display ---
+pdf(file = filename, width = 140, height = 110)
+grid.draw(p$gtable)
+dev.off()
+
+grid.newpage()
+grid.draw(p$gtable)
+```
+
+# MOD3
+```{r}
+# ==============================================================================
+# Pheatmap with Custom Order, Colored Labels, Adjusted Legend, and More Row Spacing
+# ==============================================================================
+
+# --- 1. Prepare custom column order: sort by base ID then suffix ---
+sample_names <- rownames(count_mtrx)
+base_id <- gsub("-[12]$", "", sample_names)
+suffix <- gsub(".*-", "", sample_names)
+order_df <- data.frame(sample = sample_names,
+                       base   = base_id,
+                       suffix = suffix)
+order_df$suffix_num <- as.numeric(suffix)
+order_df <- order_df[order(order_df$base, order_df$suffix_num), ]
+sorted_samples <- order_df$sample
+
+# --- 2. Reorder matrices ---
+count_mtrx_ordered <- count_mtrx[sorted_samples, ]
+meta_for_heatmap_ordered <- meta_for_heatmap[sorted_samples, , drop = FALSE]
+
+# --- 3. Column label colours (blue for -1, red for -2) ---
+col_label_colors <- ifelse(grepl("-1", sorted_samples), "blue",
+                           ifelse(grepl("-2", sorted_samples), "red", "black"))
+
+# --- 4. Create pheatmap object with increased height, smaller row font, and fewer legend breaks ---
+p <- pheatmap(t(count_mtrx_ordered),
+             cluster_rows = TRUE,
+             cluster_cols = FALSE,
+             order_cols = sorted_samples,
+             treeheight_row = 180,
+             treeheight_col = 0,
+             fontsize = 32,                          # base font size
+             annotation_col = meta_for_heatmap_ordered,
+             silent = TRUE,
+             clustering_distance_rows = clustering_distance_rows,
+             clustering_method = 'ward.D2',
+             # gaps_col = breaks,                     # optional
+             fontsize_row = 28,                       # smaller row labels to reduce overlap
+             fontsize_col = 32,
+             show_rownames = TRUE,
+             show_colnames = TRUE,
+             border_color = "white",                  # cell borders for spacing
+             #legend_breaks = seq(-4, 10, by = 3),     # fewer breaks -> less crowding
+             width = 140, height = 290,                # taller plot → more row spacing
+             filename = NA)
+
+# --- 5. Colour column labels (using layout table) ---
+col_names_idx <- which(p$gtable$layout$name == "col_names")
+if (length(col_names_idx) == 1) {
+  col_grob <- p$gtable$grobs[[col_names_idx]]
+  if (inherits(col_grob, "text")) {
+    col_grob$gp$col <- col_label_colors
+    p$gtable$grobs[[col_names_idx]] <- col_grob
+  }
+}
+
+# --- 6. Increase legend text size to 40 (safe value) ---
+legend_idx <- which(p$gtable$layout$name %in% c("legend", "guide-box"))
+for (idx in legend_idx) {
+  leg_grob <- p$gtable$grobs[[idx]]
+  
+  if (inherits(leg_grob, "gTree")) {
+    text_children <- which(sapply(leg_grob$children,
+                                  function(child) inherits(child, "text")))
+    for (j in text_children) {
+      leg_grob$children[[j]]$gp$fontsize <- 32
+    }
+  } else if (inherits(leg_grob, "text")) {
+    leg_grob$gp$fontsize <- 32
+  }
+  
+  p$gtable$grobs[[idx]] <- leg_grob
+}
+
+# --- 7. Move the legend 1 inch left and 0.5 inch down ---
+for (idx in legend_idx) {
+  leg_grob <- p$gtable$grobs[[idx]]
+  
+  if (is.null(leg_grob$vp)) {
+    leg_grob$vp <- viewport(x = 0.5, y = 0.5, just = c("center", "center"))
+  }
+  leg_grob$vp$x <- unit(0.5, "npc") + unit(0, "inches")   # left
+  leg_grob$vp$y <- unit(0.5, "npc") + unit(-55, "inches") # down
+  leg_grob$vp$just <- c("center", "center")
+  
+  p$gtable$grobs[[idx]] <- leg_grob
+}
+
+# --- 8. Lengthen the colorbar inside the legend (double its height) ---
+for (idx in legend_idx) {
+  leg_grob <- p$gtable$grobs[[idx]]
+  
+  if (inherits(leg_grob, "gTree")) {
+    # Find all raster grobs (the colorbar is a rasterGrob)
+    raster_children <- which(sapply(leg_grob$children,
+                                    function(child) inherits(child, "rastergrob")))
+    for (r in raster_children) {
+      # Double the height of the raster
+      if (!is.null(leg_grob$children[[r]]$height)) {
+        leg_grob$children[[r]]$height <- leg_grob$children[[r]]$height * 5
+      } else {
+        # If height not set, assign a default and double
+        leg_grob$children[[r]]$height <- unit(1, "inches") * 5
+      }
+      # Ensure the raster is still centered
+      leg_grob$children[[r]]$y <- unit(0.5, "npc")
+      leg_grob$children[[r]]$just <- "center"
+    }
+  }
+  
+  p$gtable$grobs[[idx]] <- leg_grob
+}
+
+# --- 9. Save and display ---
+pdf(file = filename, width = 140, height = 290)
+grid.draw(p$gtable)
+dev.off()
+
+grid.newpage()
+grid.draw(p$gtable)
+```
+
+# mod3 top100 taxa
+```{r}
+# ==============================================================================
+# Pheatmap with Custom Order, Colored Labels, Adjusted Legend,
+# and Reduced Number of Taxa for Better Readability
+# ==============================================================================
+filename <- paste0(save_path, 'RSF_WGS_MOD3_top100_tax_glom_level_', tax_glom_level, '_transform_', transformation, '_det', detection, '_prev',prevalence,  '_clust_dist_cols_', clustering_distance_cols,  '_clust_dist_rows_', clustering_distance_rows, '.pdf')
+
+# --- 1. Prepare custom column order: sort by base ID then suffix ---
+sample_names <- rownames(count_mtrx)
+base_id <- gsub("-[12]$", "", sample_names)
+suffix <- gsub(".*-", "", sample_names)
+order_df <- data.frame(sample = sample_names,
+                       base   = base_id,
+                       suffix = suffix)
+order_df$suffix_num <- as.numeric(suffix)
+order_df <- order_df[order(order_df$base, order_df$suffix_num), ]
+sorted_samples <- order_df$sample
+
+# --- 2. Reorder matrices ---
+count_mtrx_ordered <- count_mtrx[sorted_samples, ]
+meta_for_heatmap_ordered <- meta_for_heatmap[sorted_samples, , drop = FALSE]
+
+# --- 3. Filter to top 50 most variable taxa (adjust number as needed) ---
+taxa_var <- apply(count_mtrx_ordered, 2, var, na.rm = TRUE)
+top_taxa <- names(sort(taxa_var, decreasing = TRUE)[1:100])  # keep top 50
+count_mtrx_filtered <- count_mtrx_ordered[, top_taxa, drop = FALSE]
+
+# --- 4. Column label colours (blue for -1, red for -2) ---
+col_label_colors <- ifelse(grepl("-1", sorted_samples), "blue",
+                           ifelse(grepl("-2", sorted_samples), "red", "black"))
+
+# --- 5. Create pheatmap object with filtered data ---
+p <- pheatmap(t(count_mtrx_filtered),                     # transpose: samples as columns
+             cluster_rows = TRUE,
+             cluster_cols = FALSE,
+             order_cols = sorted_samples,
+             treeheight_row = 90,
+             treeheight_col = 0,
+             fontsize = 32,                                # base font size
+             annotation_col = meta_for_heatmap_ordered,
+             silent = TRUE,
+             clustering_distance_rows = clustering_distance_rows,
+             clustering_method = 'ward.D2',
+             # gaps_col = breaks,                          # optional
+             fontsize_row = 32,                             # moderate row label size
+             fontsize_col = 32,
+             show_rownames = TRUE,
+             show_colnames = TRUE,
+             border_color = "white",                        # cell borders for spacing
+             legend_breaks = seq(-4, 10, by = 3),           # fewer breaks → less crowding
+             width = 140, height = 110,                     # reasonable height
+             filename = NA)
+
+# --- 6. Colour column labels ---
+col_names_idx <- which(p$gtable$layout$name == "col_names")
+if (length(col_names_idx) == 1) {
+  col_grob <- p$gtable$grobs[[col_names_idx]]
+  if (inherits(col_grob, "text")) {
+    col_grob$gp$col <- col_label_colors
+    p$gtable$grobs[[col_names_idx]] <- col_grob
+  }
+}
+
+# --- 7. Increase legend text size to 40 ---
+legend_idx <- which(p$gtable$layout$name %in% c("legend", "guide-box"))
+for (idx in legend_idx) {
+  leg_grob <- p$gtable$grobs[[idx]]
+  
+  if (inherits(leg_grob, "gTree")) {
+    text_children <- which(sapply(leg_grob$children,
+                                  function(child) inherits(child, "text")))
+    for (j in text_children) {
+      leg_grob$children[[j]]$gp$fontsize <- 40
+    }
+  } else if (inherits(leg_grob, "text")) {
+    leg_grob$gp$fontsize <- 40
+  }
+  
+  p$gtable$grobs[[idx]] <- leg_grob
+}
+
+# --- 8. Move the legend 1 inch left and 0.5 inch down ---
+for (idx in legend_idx) {
+  leg_grob <- p$gtable$grobs[[idx]]
+  
+  if (is.null(leg_grob$vp)) {
+    leg_grob$vp <- viewport(x = 0.5, y = 0.5, just = c("center", "center"))
+  }
+  leg_grob$vp$x <- unit(0.5, "npc") + unit(-1, "inches")   # left
+  leg_grob$vp$y <- unit(0.5, "npc") + unit(-0.5, "inches") # down
+  leg_grob$vp$just <- c("center", "center")
+  
+  p$gtable$grobs[[idx]] <- leg_grob
+}
+
+# --- 9. Save and display ---
+pdf(file = filename, width = 140, height = 110)
+grid.draw(p$gtable)
+dev.off()
+
+grid.newpage()
+grid.draw(p$gtable)
+```
+
+# mod3 top100 rare taxa & grouped by Timepoint or SampleID
+```{r}
+# ==============================================================================
+# Two Heatmaps: Timepoint-Ordered (Top 100 Variable) and Least Abundant Species
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 0. Common preparations
+# ------------------------------------------------------------------------------
+# Original paired sample order (as before)
+sample_names <- rownames(count_mtrx)
+base_id <- gsub("-[12]$", "", sample_names)
+suffix <- gsub(".*-", "", sample_names)
+order_df <- data.frame(sample = sample_names,
+                       base   = base_id,
+                       suffix = suffix)
+order_df$suffix_num <- as.numeric(suffix)
+order_df <- order_df[order(order_df$base, order_df$suffix_num), ]
+sorted_samples_paired <- order_df$sample
+
+# ------------------------------------------------------------------------------
+# 1. Timepoint‑ordered sample vector (all -1 first, then -2)
+# ------------------------------------------------------------------------------
+# Extract suffix and sort by it, then by base ID to keep within-group order consistent
+timepoint_df <- data.frame(sample = sample_names,
+                           base = base_id,
+                           suffix = suffix)
+timepoint_df <- timepoint_df[order(timepoint_df$suffix, timepoint_df$base), ]
+sorted_samples_timepoint <- timepoint_df$sample
+
+# Colors for timepoint order
+#col_label_colors_timepoint <- ifelse(grepl("-1", sorted_samples_timepoint), "blue",
+#                                     ifelse(grepl("-2", sorted_samples_timepoint), "red", "black"))
+
+col_label_colors_timepoint <- ifelse(endsWith(sorted_samples_timepoint, "-1"), "blue",
+                                     ifelse(endsWith(sorted_samples_timepoint, "-2"), "red", "black"))
+
+# ------------------------------------------------------------------------------
+# 2. Select top 100 most variable species (for timepoint heatmap)
+# ------------------------------------------------------------------------------
+taxa_var <- apply(count_mtrx, 2, var, na.rm = TRUE)          # across all samples
+top100_var <- names(sort(taxa_var, decreasing = TRUE)[1:100])
+
+# ------------------------------------------------------------------------------
+# 3. Select 100 least abundant species (by total sum across samples)
+# ------------------------------------------------------------------------------
+taxa_sum <- colSums(count_mtrx, na.rm = TRUE)
+least100_abund <- names(sort(taxa_sum, decreasing = FALSE)[1:100])   # smallest sums first
+
+# ------------------------------------------------------------------------------
+# 4. Function to create a formatted heatmap with given parameters
+# ------------------------------------------------------------------------------
+create_heatmap <- function(count_matrix, sample_order, taxa_subset,
+                           col_colors, filename_suffix) {
+  
+  # Reorder samples and subset taxa
+  count_ordered <- count_matrix[sample_order, taxa_subset, drop = FALSE]
+  meta_ordered <- meta_for_heatmap[sample_order, , drop = FALSE]
+  
+  # Build pheatmap object
+  p <- pheatmap(t(count_ordered),
+                cluster_rows = TRUE,
+                cluster_cols = FALSE,
+                order_cols = sample_order,
+                treeheight_row = 90,
+                treeheight_col = 0,
+                fontsize = 32,
+                annotation_col = meta_ordered,
+                silent = TRUE,
+                clustering_distance_rows = clustering_distance_rows,
+                clustering_method = 'ward.D2',
+                fontsize_row = 48,                # smaller row labels for readability
+                fontsize_col = 36,
+                show_rownames = TRUE,
+                show_colnames = TRUE,
+                border_color = "white",
+                legend_breaks = seq(-4, 10, by = 3),
+                width = 140, height = 140,
+                filename = NA)
+  
+  # Colour column labels
+  col_names_idx <- which(p$gtable$layout$name == "col_names")
+  if (length(col_names_idx) == 1) {
+    col_grob <- p$gtable$grobs[[col_names_idx]]
+    if (inherits(col_grob, "text")) {
+      col_grob$gp$col <- col_colors
+      p$gtable$grobs[[col_names_idx]] <- col_grob
+    }
+  }
+  
+  # Increase legend text size to 40
+  legend_idx <- which(p$gtable$layout$name %in% c("legend", "guide-box"))
+  for (idx in legend_idx) {
+    leg_grob <- p$gtable$grobs[[idx]]
+    if (inherits(leg_grob, "gTree")) {
+      text_children <- which(sapply(leg_grob$children, function(child) inherits(child, "text")))
+      for (j in text_children) {
+        leg_grob$children[[j]]$gp$fontsize <- 40
+      }
+    } else if (inherits(leg_grob, "text")) {
+      leg_grob$gp$fontsize <- 40
+    }
+    p$gtable$grobs[[idx]] <- leg_grob
+  }
+  
+  # Move legend 1 inch left, 0.5 inch down
+  for (idx in legend_idx) {
+    leg_grob <- p$gtable$grobs[[idx]]
+    if (is.null(leg_grob$vp)) {
+      leg_grob$vp <- viewport(x = 0.5, y = 0.5, just = c("center", "center"))
+    }
+    leg_grob$vp$x <- unit(0.5, "npc") + unit(-1, "inches")
+    leg_grob$vp$y <- unit(0.5, "npc") + unit(-0.5, "inches")
+    leg_grob$vp$just <- c("center", "center")
+    p$gtable$grobs[[idx]] <- leg_grob
+  }
+  
+  # Save
+  filename <- paste0(save_path, 'RSF_WGS_', filename_suffix,
+                     '_tax_glom_level_', tax_glom_level,
+                     '_transform_', transformation, '_det', detection,
+                     '_prev', prevalence, '.pdf')
+  pdf(file = filename, width = 140, height = 140)
+  grid.draw(p$gtable)
+  dev.off()
+  
+  # Return the p object for optional display
+  return(p)
+}
+
+# ------------------------------------------------------------------------------
+# 5. Generate Heatmap A: Timepoint‑ordered, top 100 variable species
+# ------------------------------------------------------------------------------
+p_A <- create_heatmap(
+  count_matrix = count_mtrx,
+  sample_order = sorted_samples_timepoint,
+  taxa_subset = top100_var,
+  col_colors = col_label_colors_timepoint,
+  filename_suffix = "timepointOrdered_top100var"
+)
+
+# ------------------------------------------------------------------------------
+# 6. Generate Heatmap B: Timepoint‑ordered, 100 least abundant species
+# ------------------------------------------------------------------------------
+
+p_B <- create_heatmap(
+  count_matrix = count_mtrx,
+  sample_order = sorted_samples_timepoint,
+  taxa_subset = least100_abund,
+  col_colors = col_label_colors_timepoint,
+  filename_suffix = "timepointOrdered_least100var"
+)
+
+# ------------------------------------------------------------------------------
+# 7. Optionally display one of them in R
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Colors for paired order (same logic as timepoint but using sorted_samples_paired)
+# ------------------------------------------------------------------------------
+col_label_colors_paired <- ifelse(endsWith(sorted_samples_paired, "-1"), "blue",
+                                  ifelse(endsWith(sorted_samples_paired, "-2"), "red", "black"))
+
+# ------------------------------------------------------------------------------
+# Heatmap C: Paired-ordered, top 100 variable species
+# ------------------------------------------------------------------------------
+p_C <- create_heatmap(
+  count_matrix = count_mtrx,
+  sample_order = sorted_samples_paired,
+  taxa_subset = top100_var,
+  col_colors = col_label_colors_paired,
+  filename_suffix = "pairedOrdered_top100var"
+)
+
+# ------------------------------------------------------------------------------
+# Heatmap D: Paired-ordered, 100 least abundant species
+# ------------------------------------------------------------------------------
+p_D <- create_heatmap(
+  count_matrix = count_mtrx,
+  sample_order = sorted_samples_paired,
+  taxa_subset = least100_abund,
+  col_colors = col_label_colors_paired,
+  filename_suffix = "pairedOrdered_least100abund"
+)
+```
+
+#DEBUG for samples BO-101/103
+```{r}
+# After count_mtrx and meta_for_heatmap are defined
+sample_names <- rownames(count_mtrx)
+base_id <- gsub("-[12]$", "", sample_names)
+suffix <- gsub(".*-", "", sample_names)
+
+# Create a data frame for inspection
+sample_info <- data.frame(
+  sample = sample_names,
+  base   = base_id,
+  suffix = suffix,
+  stringsAsFactors = FALSE
+)
+
+# Check problematic samples
+print(sample_info[sample_info$sample %in% c("BO-101-1", "BO-101-2", "BO-103-1", "BO-103-2"), ])
+# Build the timepoint order
+timepoint_df <- sample_info[order(sample_info$suffix, sample_info$base), ]
+sorted_samples_timepoint <- timepoint_df$sample
+
+# Colors for this order
+col_colors_timepoint <- ifelse(grepl("-1", sorted_samples_timepoint), "blue",
+                               ifelse(grepl("-2", sorted_samples_timepoint), "red", "black"))
+
+# Check where the problematic samples are and their assigned color
+problem_idx <- which(sorted_samples_timepoint %in% c("BO-101-1", "BO-101-2", "BO-103-1", "BO-103-2"))
+data.frame(
+  sample = sorted_samples_timepoint[problem_idx],
+  color  = col_colors_timepoint[problem_idx]
+)
+```
+# DEBUG pt2
+```{r}
+# After building sample_info (from earlier)
+prob_samples <- c("BO-101-1", "BO-101-2", "BO-103-1", "BO-103-2")
+
+# Show raw character codes (hex)
+for (s in prob_samples) {
+  cat(s, ":", charToRaw(s), "\n")
+}
+```
+

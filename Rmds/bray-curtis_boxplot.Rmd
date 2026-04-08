@@ -1,0 +1,1528 @@
+#libs
+```{r}
+# Load required libraries
+library(phyloseq)
+library(ggplot2)
+library(dplyr)
+library(ggpubr)  # for stat_compare_means
+library(tidyr)   # for drop_na if needed
+
+```
+
+
+
+#load ps
+```{r}
+ps1 <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
+ps1
+ps1@sam_data$Batch <- as.factor(ps1@sam_data$Batch)
+ps = prune_taxa(taxa_sums(ps1) > 10, ps1)
+level <- 'Species'
+ps <- speedyseq::tax_glom(ps, taxrank = level, NArm = TRUE)
+det <- 1/100
+prev <- 10/100
+# Prepare the phyloseq object
+taxas <- core_members(ps, detection = det, prevalence = prev, include.lowest = F)
+ps <- prune_taxa(taxas, ps)
+
+```
+
+
+
+
+# debug
+```{r}
+# SIMPLE AND ROBUST SOLUTION - FIXED VERSION
+
+calculate_within_sample_bray_curtis <- function(ps_obj) {
+  cat("=== Calculating Within-Sample Bray-Curtis Distances ===\n")
+  
+  # Get metadata as dataframe
+  meta_df <- as.data.frame(sample_data(ps_obj))
+  
+  # Get unique patients with both timepoints
+  valid_patients <- meta_df %>%
+    group_by(No_Patient) %>%
+    summarise(
+      has_both = all(c("-1", "-2") %in% Timepoint),
+      Group = first(Group)
+    ) %>%
+    filter(has_both)
+  
+  cat("Found", nrow(valid_patients), "patients with both timepoints\n")
+  
+  if (nrow(valid_patients) == 0) {
+    cat("No patients with both timepoints found!\n")
+    return(data.frame())
+  }
+  
+  # Prepare results dataframe
+  results <- data.frame()
+  
+  # Process each patient - FIXED APPROACH
+  for (i in 1:nrow(valid_patients)) {
+    patient <- valid_patients$No_Patient[i]
+    group <- valid_patients$Group[i]
+    
+    # Get all samples for this patient
+    patient_indices <- which(meta_df$No_Patient == patient)
+    
+    if (length(patient_indices) != 2) {
+      cat("  ✗ Patient", patient, "doesn't have exactly 2 samples\n")
+      next
+    }
+    
+    # Get sample names
+    sample_names <- rownames(meta_df)[patient_indices]
+    
+    # Get timepoints for these samples
+    timepoints <- meta_df$Timepoint[patient_indices]
+    
+    # Ensure we have one -1 and one -2
+    if (!all(c("-1", "-2") %in% timepoints)) {
+      cat("  ✗ Patient", patient, "doesn't have both timepoints\n")
+      next
+    }
+    
+    # Identify which sample is which timepoint
+    sample_t1 <- sample_names[which(timepoints == "-1")]
+    sample_t2 <- sample_names[which(timepoints == "-2")]
+    
+    if (length(sample_t1) != 1 || length(sample_t2) != 1) {
+      cat("  ✗ Patient", patient, "timepoint identification failed\n")
+      next
+    }
+    
+    tryCatch({
+      # Extract OTU data for these two samples directly from phyloseq
+      otu_data <- as.data.frame(otu_table(ps_obj))
+      
+      # Get abundance vectors
+      otu_t1 <- as.numeric(otu_data[, sample_t1])
+      otu_t2 <- as.numeric(otu_data[, sample_t2])
+      
+      # Remove any NA values (replace with 0)
+      otu_t1[is.na(otu_t1)] <- 0
+      otu_t2[is.na(otu_t2)] <- 0
+      
+      # Calculate Bray-Curtis
+      bc_distance <- calculate_bray_curtis_manual(otu_t1, otu_t2)
+      
+      if (!is.na(bc_distance)) {
+        results <- rbind(results, data.frame(
+          PatientID = patient,
+          Group = group,
+          BrayCurtis_Distance = bc_distance,
+          stringsAsFactors = FALSE
+        ))
+        cat("  ✓ Patient", patient, "distance:", round(bc_distance, 4), "\n")
+      } else {
+        cat("  ✗ Patient", patient, "resulted in NA distance\n")
+      }
+    }, error = function(e) {
+      cat("  ✗ Error for patient", patient, ":", e$message, "\n")
+    })
+  }
+  
+  cat("\nSuccessfully calculated distances for", nrow(results), "patients\n")
+  return(results)
+}
+
+# Alternative: Even simpler version using matrix operations
+calculate_within_sample_bray_curtis_simple <- function(ps_obj) {
+  cat("=== Calculating Within-Sample Bray-Curtis Distances (Simple) ===\n")
+  
+  # Get OTU table as matrix
+  otu_mat <- as.matrix(otu_table(ps_obj))
+  
+  # Get metadata
+  meta_df <- as.data.frame(sample_data(ps_obj))
+  
+  # Create patient-timepoint mapping
+  patient_map <- data.frame(
+    SampleID = rownames(meta_df),
+    PatientID = meta_df$No_Patient,
+    Timepoint = meta_df$Timepoint,
+    Group = meta_df$Group,
+    stringsAsFactors = FALSE
+  )
+  
+  # Find patients with both timepoints
+  patients_both <- patient_map %>%
+    group_by(PatientID) %>%
+    summarise(
+      has_both = all(c("-1", "-2") %in% Timepoint),
+      Group = first(Group)
+    ) %>%
+    filter(has_both)
+  
+  cat("Found", nrow(patients_both), "patients with both timepoints\n")
+  
+  if (nrow(patients_both) == 0) {
+    return(data.frame())
+  }
+  
+  # Prepare results
+  results <- data.frame()
+  
+  for (i in 1:nrow(patients_both)) {
+    patient <- patients_both$PatientID[i]
+    group <- patients_both$Group[i]
+    
+    # Get samples for this patient
+    patient_samples <- subset(patient_map, PatientID == patient)
+    
+    # Get sample IDs for each timepoint
+    sample_t1 <- patient_samples$SampleID[patient_samples$Timepoint == "-1"]
+    sample_t2 <- patient_samples$SampleID[patient_samples$Timepoint == "-2"]
+    
+    if (length(sample_t1) == 1 && length(sample_t2) == 1) {
+      # Get abundance vectors
+      vec1 <- otu_mat[, sample_t1]
+      vec2 <- otu_mat[, sample_t2]
+      
+      # Convert to numeric and handle NAs
+      vec1 <- as.numeric(vec1)
+      vec2 <- as.numeric(vec2)
+      vec1[is.na(vec1)] <- 0
+      vec2[is.na(vec2)] <- 0
+      
+      # Calculate distance
+      bc_dist <- calculate_bray_curtis_manual(vec1, vec2)
+      
+      if (!is.na(bc_dist)) {
+        results <- rbind(results, data.frame(
+          PatientID = patient,
+          Group = group,
+          BrayCurtis_Distance = bc_dist,
+          stringsAsFactors = FALSE
+        ))
+        cat("  ✓ Patient", patient, "distance:", round(bc_dist, 4), "\n")
+      }
+    }
+  }
+  
+  return(results)
+}
+
+# Manual Bray-Curtis calculation (more reliable)
+calculate_bray_curtis_manual <- function(vec1, vec2) {
+  # Bray-Curtis formula: sum(|x_i - y_i|) / sum(x_i + y_i)
+  numerator <- sum(abs(vec1 - vec2), na.rm = TRUE)
+  denominator <- sum(vec1 + vec2, na.rm = TRUE)
+  
+  if (denominator == 0) {
+    return(NA)  # Avoid division by zero
+  }
+  
+  return(numerator / denominator)
+}
+
+# Plot the results
+plot_bray_curtis_by_group <- function(distance_df, output_dir) {
+  if (nrow(distance_df) == 0) {
+    cat("No data to plot!\n")
+    return(NULL)
+  }
+  
+  # Ensure Group is factor
+  distance_df$Group <- factor(distance_df$Group)
+  
+  # Define colors
+  group_colors <- c("A" = "#FF3333", "B" = "#3366FF", "C" = "#33CC33")
+  
+  # Create plot
+  p <- ggplot(distance_df, aes(x = Group, y = BrayCurtis_Distance, fill = Group)) +
+    geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+    geom_jitter(width = 0.2, size = 2, alpha = 0.6, color = "black") +
+    scale_fill_manual(values = group_colors) +
+    theme_bw(base_size = 14) +
+    labs(
+      title = "Within-Sample Bray-Curtis Distances Between Timepoints",
+      subtitle = "How similar are samples to themselves at different timepoints?",
+      x = "Group",
+      y = "Bray-Curtis Distance (0 = identical, 1 = completely different)",
+      caption = paste("N =", nrow(distance_df), "patients with both timepoints")
+    ) +
+    theme(
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(size = 12, hjust = 0.5),
+      legend.position = "none"
+    ) +
+    ylim(0, 1)
+  
+  # Add statistical comparisons if possible
+  groups <- unique(distance_df$Group)
+  if (length(groups) >= 2) {
+    comparisons <- combn(groups, 2, simplify = FALSE)
+    
+    # Filter comparisons where both groups have at least 2 observations
+    valid_comparisons <- list()
+    for (comp in comparisons) {
+      group1_count <- sum(distance_df$Group == comp[1])
+      group2_count <- sum(distance_df$Group == comp[2])
+      if (group1_count >= 2 && group2_count >= 2) {
+        valid_comparisons <- c(valid_comparisons, list(comp))
+      }
+    }
+    
+    if (length(valid_comparisons) > 0) {
+      p <- p + stat_compare_means(
+        comparisons = valid_comparisons,
+        method = "wilcox.test",
+        label = "p.signif",
+        size = 5,
+        tip.length = 0.02
+      )
+    }
+  }
+  
+  # Save plot
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+  plot_file <- file.path(output_dir, "within_sample_bray_curtis.png")
+  ggsave(plot_file, p, width = 10, height = 7, dpi = 300)
+  cat("Saved plot to:", plot_file, "\n")
+  
+  return(p)
+}
+
+# Save results
+save_bray_curtis_results <- function(distance_df, output_dir) {
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  # Save raw distances
+  distances_file <- file.path(output_dir, "bray_curtis_distances.csv")
+  write.csv(distance_df, distances_file, row.names = FALSE)
+  cat("Saved distances to:", distances_file, "\n")
+  
+  # Save summary statistics
+  summary_stats <- distance_df %>%
+    group_by(Group) %>%
+    summarise(
+      N = n(),
+      Mean = mean(BrayCurtis_Distance),
+      SD = sd(BrayCurtis_Distance),
+      Median = median(BrayCurtis_Distance),
+      Min = min(BrayCurtis_Distance),
+      Max = max(BrayCurtis_Distance)
+    )
+  
+  stats_file <- file.path(output_dir, "bray_curtis_summary.csv")
+  write.csv(summary_stats, stats_file, row.names = FALSE)
+  cat("Saved summary statistics to:", stats_file, "\n")
+  
+  # Perform statistical tests
+  if (length(unique(distance_df$Group)) >= 2) {
+    test_results <- data.frame()
+    groups <- unique(distance_df$Group)
+    comparisons <- combn(groups, 2, simplify = FALSE)
+    
+    for (comp in comparisons) {
+      group1 <- comp[1]
+      group2 <- comp[2]
+      
+      data1 <- distance_df$BrayCurtis_Distance[distance_df$Group == group1]
+      data2 <- distance_df$BrayCurtis_Distance[distance_df$Group == group2]
+      
+      if (length(data1) >= 2 && length(data2) >= 2) {
+        test <- wilcox.test(data1, data2, exact = FALSE)
+        
+        test_results <- rbind(test_results, data.frame(
+          Comparison = paste(group1, "vs", group2),
+          N_Group1 = length(data1),
+          N_Group2 = length(data2),
+          Mean_Group1 = mean(data1),
+          Mean_Group2 = mean(data2),
+          P_value = test$p.value,
+          P_value_rounded = round(test$p.value, 4),
+          Significance = ifelse(test$p.value < 0.001, "***",
+                               ifelse(test$p.value < 0.01, "**",
+                                      ifelse(test$p.value < 0.05, "*", "ns")))
+        ))
+      }
+    }
+    
+    if (nrow(test_results) > 0) {
+      tests_file <- file.path(output_dir, "bray_curtis_statistics.csv")
+      write.csv(test_results, tests_file, row.names = FALSE)
+      cat("Saved statistical tests to:", tests_file, "\n")
+    }
+  }
+}
+
+# MAIN FUNCTION - UPDATED
+analyze_within_sample_similarity <- function(ps_obj, output_dir = "within_sample_analysis") {
+  cat("=== WITHIN-SAMPLE SIMILARITY ANALYSIS ===\n")
+  
+  # Optional: Convert to relative abundance first
+  cat("\nConverting to relative abundance...\n")
+  ps_rel <- transform_sample_counts(ps_obj, function(x) x / sum(x))
+  
+  # Calculate distances using simple method
+  cat("\nCalculating Bray-Curtis distances...\n")
+  distances <- calculate_within_sample_bray_curtis_simple(ps_rel)
+  
+  if (nrow(distances) == 0) {
+    cat("\nNo valid distances calculated. Analysis stopped.\n")
+    return(NULL)
+  }
+  
+  # Create plot
+  cat("\nCreating visualization...\n")
+  plot <- plot_bray_curtis_by_group(distances, output_dir)
+  
+  # Save results
+  cat("\nSaving results...\n")
+  save_bray_curtis_results(distances, output_dir)
+  
+  # Print summary
+  cat("\n=== ANALYSIS SUMMARY ===\n")
+  cat("Total patients analyzed:", nrow(distances), "\n")
+  cat("\nSummary by group:\n")
+  print(distances %>%
+    group_by(Group) %>%
+    summarise(
+      N = n(),
+      Mean_Distance = round(mean(BrayCurtis_Distance), 4),
+      SD = round(sd(BrayCurtis_Distance), 4),
+      Median = round(median(BrayCurtis_Distance), 4)
+    ))
+  
+  cat("\n=== COMPLETE ===\n")
+  cat("Results saved in:", output_dir, "\n")
+  
+  return(list(
+    distances = distances,
+    plot = plot
+  ))
+}
+
+# RUN ANALYSIS
+# Use the simple version
+results <- analyze_within_sample_similarity(
+  ps_obj = ps,
+  output_dir = "/home/sonec_iv/within_sample_analysis"
+)
+```
+
+# upd
+```{r}
+# Enhanced plotting function with improved significance display
+#ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
+plot_bray_curtis_by_group <- function(distance_df, output_dir, 
+                                       test_method = "wilcox.test",
+                                       show_p_values = FALSE,
+                                       hide_ns = FALSE,
+                                       step_increase = 0.08,
+                                       y_max = 1.2) {
+  if (nrow(distance_df) == 0) {
+    cat("No data to plot!\n")
+    return(NULL)
+  }
+  
+  # Ensure Group is factor
+  distance_df$Group <- factor(distance_df$Group)
+  
+  # Define colors
+  group_colors <- c("A" = "#FF3333", "B" = "#3366FF", "C" = "#33CC33")
+  
+  # Create plot
+  p <- ggplot(distance_df, aes(x = Group, y = BrayCurtis_Distance, fill = Group)) +
+    geom_boxplot(alpha = 0.7, outlier.shape = NA, width = 0.6) +
+    geom_jitter(width = 0.2, size = 2, alpha = 0.6, color = "black", height = 0) +
+    scale_fill_manual(values = group_colors) +
+    theme_bw(base_size = 14) +
+    labs(
+      title = "Within-Sample Bray-Curtis Distances Between Timepoints",
+      subtitle = "How similar are samples to themselves at different timepoints?",
+      x = "Group",
+      y = "Bray-Curtis Distance (0 = identical, 1 = completely different)",
+      caption = paste("N =", nrow(distance_df), "patients with both timepoints")
+    ) +
+    theme(
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(size = 12, hjust = 0.5),
+      legend.position = "none",
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank()
+    ) +
+    ylim(0, y_max)
+  
+  # Prepare comparisons
+  groups <- unique(distance_df$Group)
+  
+  if (length(groups) >= 2) {
+    # Generate all possible pairwise comparisons
+    comparisons <- combn(groups, 2, simplify = FALSE)
+    
+    # Filter comparisons where both groups have at least 2 observations
+    valid_comparisons <- list()
+    for (comp in comparisons) {
+      group1_count <- sum(distance_df$Group == comp[1])
+      group2_count <- sum(distance_df$Group == comp[2])
+      if (group1_count >= 2 && group2_count >= 2) {
+        valid_comparisons <- c(valid_comparisons, list(comp))
+      }
+    }
+    
+    if (length(valid_comparisons) > 0) {
+      # OPTION 1: Show significance stars (default)
+      if (!show_p_values) {
+        p <- p + stat_compare_means(
+          comparisons = valid_comparisons,
+          method = test_method,
+          label = "p.signif",
+          size = 6,
+          tip.length = 0.02,
+          step.increase = step_increase,
+          hide.ns = hide_ns,
+          vjust = 0.5,
+          bracket.size = 0.8
+        )
+      } 
+      # OPTION 2: Show actual p-values
+      else {
+        p <- p + stat_compare_means(
+          comparisons = valid_comparisons,
+          method = test_method,
+          label = "p.format",  # Shows formatted p-value
+          size = 4.5,
+          tip.length = 0.02,
+          step.increase = step_increase,
+          bracket.size = 0.8
+        )
+      }
+      
+      # Add annotation for test method used
+      p <- p + labs(caption = paste(
+        p$labels$caption,
+        paste0("\nTest: ", test_method, ifelse(hide_ns, " (ns hidden)", ""))
+      ))
+    }
+  }
+  
+  # Save plot
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+  plot_file <- file.path(output_dir, "within_sample_bray_curtis.png")
+  ggsave(plot_file, p, width = 10, height = 7, dpi = 300)
+  cat("Saved plot to:", plot_file, "\n")
+  
+  return(p)
+}
+
+# Alternative: Custom significance annotations with more control
+plot_bray_curtis_custom <- function(distance_df, output_dir) {
+  if (nrow(distance_df) == 0) {
+    cat("No data to plot!\n")
+    return(NULL)
+  }
+  
+  # Ensure Group is factor
+  distance_df$Group <- factor(distance_df$Group)
+  
+  # Define colors
+  group_colors <- c("A" = "#FF3333", "B" = "#3366FF", "C" = "#33CC33")
+  
+  # Perform statistical tests first
+  test_results <- perform_pairwise_tests(distance_df)
+  
+  # Create base plot
+  p <- ggplot(distance_df, aes(x = Group, y = BrayCurtis_Distance, fill = Group)) +
+    geom_boxplot(alpha = 0.7, outlier.shape = NA, width = 0.6) +
+    geom_jitter(width = 0.2, size = 2, alpha = 0.6, color = "black", height = 0) +
+    scale_fill_manual(values = group_colors) +
+    theme_bw(base_size = 14) +
+    labs(
+      title = "Within-Sample Bray-Curtis Distances Between Timepoints",
+      subtitle = "How similar are samples to themselves at different timepoints?",
+      x = "Group",
+      y = "Bray-Curtis Distance (0 = identical, 1 = completely different)",
+      caption = paste("N =", nrow(distance_df), "patients with both timepoints")
+    ) +
+    theme(
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(size = 12, hjust = 0.5),
+      legend.position = "none",
+      panel.grid.major.x = element_blank()
+    ) +
+    ylim(0, 1.1)
+  
+  # Add custom significance annotations if tests were performed
+  if (nrow(test_results) > 0) {
+    # Calculate y positions for brackets
+    max_val <- max(distance_df$BrayCurtis_Distance, na.rm = TRUE)
+    y_step <- max_val * 0.05
+    y_positions <- seq(max_val + y_step, 
+                       max_val + (nrow(test_results) * y_step), 
+                       by = y_step)
+    
+    # Add significance annotations
+    for (i in 1:nrow(test_results)) {
+      comp <- test_results[i, ]
+      
+      # Add significance stars
+      p <- p + annotate("text",
+        x = mean(c(which(levels(distance_df$Group) == comp$Group1),
+                   which(levels(distance_df$Group) == comp$Group2))),
+        y = y_positions[i],
+        label = comp$Significance,
+        size = 8,
+        fontface = "bold"
+      )
+      
+      # Add bracket line
+      p <- p + annotate("segment",
+        x = which(levels(distance_df$Group) == comp$Group1),
+        xend = which(levels(distance_df$Group) == comp$Group2),
+        y = y_positions[i] - (y_step * 0.2),
+        yend = y_positions[i] - (y_step * 0.2),
+        size = 0.8
+      )
+      
+      # Add vertical lines at ends
+      p <- p + annotate("segment",
+        x = which(levels(distance_df$Group) == comp$Group1),
+        xend = which(levels(distance_df$Group) == comp$Group1),
+        y = y_positions[i] - (y_step * 0.2),
+        yend = y_positions[i] - (y_step * 0.3),
+        size = 0.8
+      )
+      
+      p <- p + annotate("segment",
+        x = which(levels(distance_df$Group) == comp$Group2),
+        xend = which(levels(distance_df$Group) == comp$Group2),
+        y = y_positions[i] - (y_step * 0.2),
+        yend = y_positions[i] - (y_step * 0.3),
+        size = 0.8
+      )
+    }
+    
+    # Adjust y limit to accommodate significance annotations
+    p <- p + ylim(0, max(y_positions) + y_step)
+  }
+  
+  # Save plot
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+  plot_file <- file.path(output_dir, "within_sample_bray_curtis_custom.png")
+  ggsave(plot_file, p, width = 10, height = 8, dpi = 300)
+  cat("Saved custom plot to:", plot_file, "\n")
+  
+  return(p)
+}
+
+# Helper function for pairwise tests
+perform_pairwise_tests <- function(distance_df) {
+  results <- data.frame()
+  groups <- unique(distance_df$Group)
+  comparisons <- combn(groups, 2, simplify = FALSE)
+  
+  for (comp in comparisons) {
+    group1 <- comp[1]
+    group2 <- comp[2]
+    
+    data1 <- distance_df$BrayCurtis_Distance[distance_df$Group == group1]
+    data2 <- distance_df$BrayCurtis_Distance[distance_df$Group == group2]
+    
+    if (length(data1) >= 2 && length(data2) >= 2) {
+      test <- wilcox.test(data1, data2, exact = FALSE)
+      
+      results <- rbind(results, data.frame(
+        Group1 = group1,
+        Group2 = group2,
+        P_value = test$p.value,
+        Significance = ifelse(test$p.value < 0.001, "***",
+                             ifelse(test$p.value < 0.01, "**",
+                                    ifelse(test$p.value < 0.05, "*", "ns")))
+      ))
+    }
+  }
+  
+  return(results)
+}
+
+# Updated main function with options
+analyze_within_sample_similarity <- function(ps_obj, output_dir = "within_sample_analysis",
+                                             show_p_values = FALSE,
+                                             hide_ns = TRUE,
+                                             custom_plot = FALSE) {
+  cat("=== WITHIN-SAMPLE SIMILARITY ANALYSIS ===\n")
+  
+  # Optional: Convert to relative abundance first
+  cat("\nConverting to relative abundance...\n")
+  ps_rel <- transform_sample_counts(ps_obj, function(x) x / sum(x))
+  
+  # Calculate distances using simple method
+  cat("\nCalculating Bray-Curtis distances...\n")
+  distances <- calculate_within_sample_bray_curtis_simple(ps_rel)
+  
+  if (nrow(distances) == 0) {
+    cat("\nNo valid distances calculated. Analysis stopped.\n")
+    return(NULL)
+  }
+  
+  # Create plot
+  cat("\nCreating visualization...\n")
+  if (custom_plot) {
+    plot <- plot_bray_curtis_custom(distances, output_dir)
+  } else {
+    plot <- plot_bray_curtis_by_group(distances, output_dir, 
+                                      show_p_values = show_p_values,
+                                      hide_ns = hide_ns)
+  }
+  
+  # Save results
+  cat("\nSaving results...\n")
+  save_bray_curtis_results(distances, output_dir)
+  
+  # Print summary
+  cat("\n=== ANALYSIS SUMMARY ===\n")
+  cat("Total patients analyzed:", nrow(distances), "\n")
+  cat("\nSummary by group:\n")
+  print(distances %>%
+    group_by(Group) %>%
+    summarise(
+      N = n(),
+      Mean_Distance = round(mean(BrayCurtis_Distance), 4),
+      SD = round(sd(BrayCurtis_Distance), 4),
+      Median = round(median(BrayCurtis_Distance), 4)
+    ))
+  
+  cat("\n=== COMPLETE ===\n")
+  cat("Results saved in:", output_dir, "\n")
+  
+  return(list(
+    distances = distances,
+    plot = plot
+  ))
+}
+
+# RUN ANALYSIS WITH DIFFERENT OPTIONS
+# Option 1: Default (significance stars)
+results1 <- analyze_within_sample_similarity(
+  ps_obj = ps,
+  output_dir = "/home/sonec_iv/within_sample_analysis"
+)
+
+# Option 2: Show actual p-values
+results2 <- analyze_within_sample_similarity(
+  ps_obj = ps,
+  output_dir = "/home/sonec_iv/within_sample_analysis_pvalues",
+  show_p_values = TRUE
+)
+
+# Option 3: Custom plot
+results3 <- analyze_within_sample_similarity(
+  ps_obj = ps,
+  output_dir = "/home/sonec_iv/within_sample_analysis_custom",
+  custom_plot = TRUE
+)
+
+# Option 4: Hide non-significant results
+results4 <- analyze_within_sample_similarity(
+  ps_obj = ps,
+  output_dir = "/home/sonec_iv/within_sample_analysis_ns_hidden",
+  hide_ns = TRUE
+)
+```
+#final?
+```{r}
+# ====================================================
+# WITHIN-SAMPLE BRAY-CURTIS ANALYSIS WITH SIGNIFICANCE STARS
+# ====================================================
+
+# Load required libraries
+library(phyloseq)
+library(ggplot2)
+library(dplyr)
+library(ggpubr)  # for stat_compare_means
+
+# ----------------------------------------------------
+# 1. Load the phyloseq object
+# ----------------------------------------------------
+ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
+#ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_RESEQUENCING_wgs.rds')
+
+bad_batch_samples <- c("AO-203-2", "AO-207-1", "B-022-2", "MB124-2")
+
+if (length(bad_batch_samples) > 0) {
+  ps <- prune_samples(!(sample_names(ps) %in% bad_batch_samples), ps)
+  cat("Removed", length(bad_batch_samples), "samples\n")
+}
+
+
+# ----------------------------------------------------
+# 2. Helper function: manual Bray-Curtis calculation
+# ----------------------------------------------------
+calculate_bray_curtis_manual <- function(vec1, vec2) {
+  numerator <- sum(abs(vec1 - vec2), na.rm = TRUE)
+  denominator <- sum(vec1 + vec2, na.rm = TRUE)
+  if (denominator == 0) return(NA)
+  return(numerator / denominator)
+}
+
+# ----------------------------------------------------
+# 3. Calculate within-sample Bray-Curtis distances (simple version)
+# ----------------------------------------------------
+calculate_within_sample_bray_curtis_simple <- function(ps_obj) {
+  cat("=== Calculating Within-Sample Bray-Curtis Distances ===\n")
+  
+  otu_mat <- as.matrix(otu_table(ps_obj))
+  meta_df <- as.data.frame(sample_data(ps_obj))
+  
+  patient_map <- data.frame(
+    SampleID = rownames(meta_df),
+    PatientID = meta_df$No_Patient,
+    Timepoint = meta_df$Timepoint,
+    Group = meta_df$Group,
+    stringsAsFactors = FALSE
+  )
+  
+  patients_both <- patient_map %>%
+    group_by(PatientID) %>%
+    summarise(
+      has_both = all(c("-1", "-2") %in% Timepoint),
+      Group = first(Group)
+    ) %>%
+    filter(has_both)
+  
+  cat("Found", nrow(patients_both), "patients with both timepoints\n")
+  
+  if (nrow(patients_both) == 0) return(data.frame())
+  
+  results <- data.frame()
+  
+  for (i in 1:nrow(patients_both)) {
+    patient <- patients_both$PatientID[i]
+    group   <- patients_both$Group[i]
+    
+    patient_samples <- subset(patient_map, PatientID == patient)
+    sample_t1 <- patient_samples$SampleID[patient_samples$Timepoint == "-1"]
+    sample_t2 <- patient_samples$SampleID[patient_samples$Timepoint == "-2"]
+    
+    if (length(sample_t1) == 1 && length(sample_t2) == 1) {
+      vec1 <- as.numeric(otu_mat[, sample_t1])
+      vec2 <- as.numeric(otu_mat[, sample_t2])
+      vec1[is.na(vec1)] <- 0
+      vec2[is.na(vec2)] <- 0
+      
+      bc_dist <- calculate_bray_curtis_manual(vec1, vec2)
+      
+      if (!is.na(bc_dist)) {
+        results <- rbind(results, data.frame(
+          PatientID = patient,
+          Group = group,
+          BrayCurtis_Distance = bc_dist,
+          stringsAsFactors = FALSE
+        ))
+        cat("  ✓ Patient", patient, "distance:", round(bc_dist, 4), "\n")
+      }
+    }
+  }
+  
+  cat("\nSuccessfully calculated distances for", nrow(results), "patients\n")
+  return(results)
+}
+
+# ----------------------------------------------------
+# 4. Enhanced plotting function with significance stars
+# ----------------------------------------------------
+plot_bray_curtis_by_group <- function(distance_df, output_dir, 
+                                       test_method = "wilcox.test",
+                                       show_p_values = FALSE,
+                                       step_increase = 0.08,
+                                       y_max = 1.1) {
+  if (nrow(distance_df) == 0) {
+    cat("No data to plot!\n")
+    return(NULL)
+  }
+  
+  distance_df$Group <- factor(distance_df$Group)
+  
+  # Define colors (adjust if you have more/different groups)
+  group_colors <- c("A" = "#FF3333", "B" = "#3366FF", "C" = "#33CC33")
+  
+  p <- ggplot(distance_df, aes(x = Group, y = BrayCurtis_Distance, fill = Group)) +
+    geom_boxplot(alpha = 0.7, outlier.shape = NA, width = 0.6) +
+    geom_jitter(width = 0.2, size = 2, alpha = 0.6, color = "black", height = 0) +
+    scale_fill_manual(values = group_colors) +
+    theme_bw(base_size = 14) +
+    labs(
+      title = "Within-Sample Bray-Curtis Distances Between Timepoints",
+      #subtitle = "How similar are samples to themselves at different timepoints?",
+      x = "Group",
+      y = "Bray-Curtis Distance",
+      #caption = paste("N =", nrow(distance_df), "patients with both timepoints")
+    ) +
+    theme(
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(size = 12, hjust = 0.5),
+      legend.position = "none",
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank()
+    ) +
+    ylim(0, y_max)
+  
+  # Prepare pairwise comparisons
+  groups <- unique(distance_df$Group)
+  
+  if (length(groups) >= 2) {
+    comparisons <- combn(groups, 2, simplify = FALSE)
+    
+    # Keep only comparisons where both groups have at least 2 observations
+    valid_comparisons <- list()
+    for (comp in comparisons) {
+      group1_count <- sum(distance_df$Group == comp[1])
+      group2_count <- sum(distance_df$Group == comp[2])
+      if (group1_count >= 2 && group2_count >= 2) {
+        valid_comparisons <- c(valid_comparisons, list(comp))
+      }
+    }
+    
+    if (length(valid_comparisons) > 0) {
+      if (!show_p_values) {
+        # Show significance stars (default)
+        p <- p + stat_compare_means(
+          comparisons = valid_comparisons,
+          method = test_method,
+          label = "p.signif",
+          size = 6,
+          tip.length = 0.02,
+          step.increase = step_increase,
+          vjust = 0.5,
+          bracket.size = 0.8
+        )
+      } else {
+        # Show actual p-values
+        p <- p + stat_compare_means(
+          comparisons = valid_comparisons,
+          method = test_method,
+          label = "p.format",
+          size = 4.5,
+          tip.length = 0.02,
+          step.increase = step_increase,
+          bracket.size = 0.8
+        )
+      }
+      
+      # Add test method to caption
+      p <- p + labs(caption = paste(p$labels$caption, paste0("\nTest: ", test_method)))
+    }
+  }
+  
+  # Save plot
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+  plot_file <- file.path(output_dir, "within_sample_bray_curtis.png")
+  ggsave(plot_file, p, width = 10, height = 7, dpi = 300)
+  cat("Saved plot to:", plot_file, "\n")
+  
+  return(p)
+}
+
+# ----------------------------------------------------
+# 5. Save results (distances, summary, statistics)
+# ----------------------------------------------------
+save_bray_curtis_results <- function(distance_df, output_dir) {
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  # Raw distances
+  distances_file <- file.path(output_dir, "bray_curtis_distances.csv")
+  write.csv(distance_df, distances_file, row.names = FALSE)
+  cat("Saved distances to:", distances_file, "\n")
+  
+  # Summary statistics per group
+  summary_stats <- distance_df %>%
+    group_by(Group) %>%
+    summarise(
+      N = n(),
+      Mean = mean(BrayCurtis_Distance),
+      SD = sd(BrayCurtis_Distance),
+      Median = median(BrayCurtis_Distance),
+      Min = min(BrayCurtis_Distance),
+      Max = max(BrayCurtis_Distance)
+    )
+  stats_file <- file.path(output_dir, "bray_curtis_summary.csv")
+  write.csv(summary_stats, stats_file, row.names = FALSE)
+  cat("Saved summary statistics to:", stats_file, "\n")
+  
+  # Pairwise statistical tests
+  if (length(unique(distance_df$Group)) >= 2) {
+    test_results <- data.frame()
+    groups <- unique(distance_df$Group)
+    comparisons <- combn(groups, 2, simplify = FALSE)
+    
+    for (comp in comparisons) {
+      group1 <- comp[1]
+      group2 <- comp[2]
+      
+      data1 <- distance_df$BrayCurtis_Distance[distance_df$Group == group1]
+      data2 <- distance_df$BrayCurtis_Distance[distance_df$Group == group2]
+      
+      if (length(data1) >= 2 && length(data2) >= 2) {
+        test <- wilcox.test(data1, data2, exact = FALSE)
+        
+        test_results <- rbind(test_results, data.frame(
+          Comparison = paste(group1, "vs", group2),
+          N_Group1 = length(data1),
+          N_Group2 = length(data2),
+          Mean_Group1 = mean(data1),
+          Mean_Group2 = mean(data2),
+          P_value = test$p.value,
+          P_value_rounded = round(test$p.value, 4),
+          Significance = ifelse(test$p.value < 0.001, "***",
+                               ifelse(test$p.value < 0.01, "**",
+                                      ifelse(test$p.value < 0.05, "*", "ns")))
+        ))
+      }
+    }
+    
+    if (nrow(test_results) > 0) {
+      tests_file <- file.path(output_dir, "bray_curtis_statistics.csv")
+      write.csv(test_results, tests_file, row.names = FALSE)
+      cat("Saved statistical tests to:", tests_file, "\n")
+    }
+  }
+}
+
+# ----------------------------------------------------
+# 6. Main analysis wrapper
+# ----------------------------------------------------
+analyze_within_sample_similarity <- function(ps_obj, output_dir = "within_sample_analysis",
+                                             show_p_values = FALSE) {
+  cat("=== WITHIN-SAMPLE SIMILARITY ANALYSIS ===\n")
+  
+  # Convert to relative abundance (optional but recommended)
+  cat("\nConverting to relative abundance...\n")
+  ps_rel <- transform_sample_counts(ps_obj, function(x) x / sum(x))
+  
+  # Calculate distances
+  cat("\nCalculating Bray-Curtis distances...\n")
+  distances <- calculate_within_sample_bray_curtis_simple(ps_rel)
+  
+  if (nrow(distances) == 0) {
+    cat("\nNo valid distances calculated. Analysis stopped.\n")
+    return(NULL)
+  }
+  
+  # Create plot
+  cat("\nCreating visualization...\n")
+  plot <- plot_bray_curtis_by_group(distances, output_dir, 
+                                    show_p_values = show_p_values)
+  
+  # Save results
+  cat("\nSaving results...\n")
+  save_bray_curtis_results(distances, output_dir)
+  
+  # Print summary to console
+  cat("\n=== ANALYSIS SUMMARY ===\n")
+  cat("Total patients analyzed:", nrow(distances), "\n")
+  cat("\nSummary by group:\n")
+  print(distances %>%
+          group_by(Group) %>%
+          summarise(
+            N = n(),
+            Mean_Distance = round(mean(BrayCurtis_Distance), 4),
+            SD = round(sd(BrayCurtis_Distance), 4),
+            Median = round(median(BrayCurtis_Distance), 4)
+          ))
+  
+  cat("\n=== COMPLETE ===\n")
+  cat("Results saved in:", output_dir, "\n")
+  
+  return(list(distances = distances, plot = plot))
+}
+
+# ----------------------------------------------------
+# 7. RUN THE ANALYSIS
+# ----------------------------------------------------
+# Use default: significance stars on plot
+results <- analyze_within_sample_similarity(
+  ps_obj = ps,
+  output_dir = "/home/sonec_iv/RESEQ_within_sample_analysis"
+)
+
+# If you prefer to see actual p-values instead of stars, run:
+# results <- analyze_within_sample_similarity(
+#   ps_obj = ps,
+#   output_dir = "/home/sonec_iv/within_sample_analysis_pvalues",
+#   show_p_values = TRUE
+# )
+```
+
+# add grouping
+```{r}
+# ====================================================
+# WITHIN-SAMPLE BRAY-CURTIS ANALYSIS WITH SIGNIFICANCE STARS
+# AND STRATIFICATION BY ADDITIONAL CATEGORICAL VARIABLES
+# ====================================================
+
+
+# ----------------------------------------------------
+# 1. Load the phyloseq object
+# ----------------------------------------------------
+ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
+#ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_ps_mags.rds')
+ps@sam_data$Batch <- as.factor(ps@sam_data$Batch)
+
+bad_batch_samples <- c("AO-203-2", "AO-207-1", "B-022-2", "MB124-2")
+
+if (length(bad_batch_samples) > 0) {
+  ps <- prune_samples(!(sample_names(ps) %in% bad_batch_samples), ps)
+  cat("Removed", length(bad_batch_samples), "samples\n")
+}
+
+# ----------------------------------------------------
+# 2. Helper function: manual Bray-Curtis calculation
+# ----------------------------------------------------
+calculate_bray_curtis_manual <- function(vec1, vec2) {
+  numerator <- sum(abs(vec1 - vec2), na.rm = TRUE)
+  denominator <- sum(vec1 + vec2, na.rm = TRUE)
+  if (denominator == 0) return(NA)
+  return(numerator / denominator)
+}
+
+# ----------------------------------------------------
+# 3. Calculate within-sample Bray-Curtis distances (simple version)
+# ----------------------------------------------------
+calculate_within_sample_bray_curtis_simple <- function(ps_obj) {
+  cat("=== Calculating Within-Sample Bray-Curtis Distances ===\n")
+  
+  otu_mat <- as.matrix(otu_table(ps_obj))
+  meta_df <- as.data.frame(sample_data(ps_obj))
+  
+  patient_map <- data.frame(
+    SampleID = rownames(meta_df),
+    PatientID = meta_df$No_Patient,
+    Timepoint = meta_df$Timepoint,
+    Group = meta_df$Group,
+    stringsAsFactors = FALSE
+  )
+  
+  patients_both <- patient_map %>%
+    group_by(PatientID) %>%
+    summarise(
+      has_both = all(c("-1", "-2") %in% Timepoint),
+      Group = first(Group)
+    ) %>%
+    filter(has_both)
+  
+  cat("Found", nrow(patients_both), "patients with both timepoints\n")
+  
+  if (nrow(patients_both) == 0) return(data.frame())
+  
+  results <- data.frame()
+  
+  for (i in 1:nrow(patients_both)) {
+    patient <- patients_both$PatientID[i]
+    group   <- patients_both$Group[i]
+    
+    patient_samples <- subset(patient_map, PatientID == patient)
+    sample_t1 <- patient_samples$SampleID[patient_samples$Timepoint == "-1"]
+    sample_t2 <- patient_samples$SampleID[patient_samples$Timepoint == "-2"]
+    
+    if (length(sample_t1) == 1 && length(sample_t2) == 1) {
+      vec1 <- as.numeric(otu_mat[, sample_t1])
+      vec2 <- as.numeric(otu_mat[, sample_t2])
+      vec1[is.na(vec1)] <- 0
+      vec2[is.na(vec2)] <- 0
+      
+      bc_dist <- calculate_bray_curtis_manual(vec1, vec2)
+      
+      if (!is.na(bc_dist)) {
+        results <- rbind(results, data.frame(
+          PatientID = patient,
+          Group = group,
+          BrayCurtis_Distance = bc_dist,
+          stringsAsFactors = FALSE
+        ))
+        cat("  ✓ Patient", patient, "distance:", round(bc_dist, 4), "\n")
+      }
+    }
+  }
+  
+  cat("\nSuccessfully calculated distances for", nrow(results), "patients\n")
+  return(results)
+}
+
+# ----------------------------------------------------
+# 4. Get patient-level metadata (one row per patient)
+# ----------------------------------------------------
+get_patient_metadata <- function(ps_obj) {
+  meta <- as.data.frame(sample_data(ps_obj))
+  # Take first occurrence for each patient (assuming patient-level variables are constant)
+  patient_meta <- meta %>%
+    group_by(No_Patient) %>%
+    slice(1) %>%
+    ungroup() %>%
+    select(-SampleID, -Timepoint)  # remove sample-specific columns if present
+  return(patient_meta)
+}
+
+# ----------------------------------------------------
+# 5. Enhanced plotting function with significance stars (for a single subset)
+# ----------------------------------------------------
+plot_bray_curtis_by_group <- function(distance_df, output_dir, 
+                                       test_method = "wilcox.test",
+                                       show_p_values = FALSE,
+                                       step_increase = 0.08,
+                                       y_max = 1.1,
+                                       plot_title = NULL,
+                                       filename_suffix = "") {
+  if (nrow(distance_df) == 0) {
+    cat("No data to plot!\n")
+    return(NULL)
+  }
+  
+  distance_df$Group <- factor(distance_df$Group)
+  
+  # Define colors (adjust if you have more/different groups)
+  group_colors <- c("A" = "#FF3333", "B" = "#3366FF", "C" = "#33CC33")
+  
+  if (is.null(plot_title)) {
+    plot_title <- "Within-Sample Bray-Curtis Distances Between Timepoints"
+  }
+  
+  p <- ggplot(distance_df, aes(x = Group, y = BrayCurtis_Distance, fill = Group)) +
+    geom_boxplot(alpha = 0.7, outlier.shape = NA, width = 0.6) +
+    geom_jitter(width = 0.2, size = 2, alpha = 0.6, color = "black", height = 0) +
+    scale_fill_manual(values = group_colors) +
+    theme_bw(base_size = 14) +
+    labs(
+      title = plot_title,
+      subtitle = "How similar are samples to themselves at different timepoints?",
+      x = "Group",
+      y = "Bray-Curtis Distance (0 = identical, 1 = completely different)",
+      #caption = paste("N =", nrow(distance_df), "patients")
+    ) +
+    theme(
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(size = 12, hjust = 0.5),
+      legend.position = "none",
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank()
+    ) +
+    ylim(0, y_max)
+  
+  # Prepare pairwise comparisons
+  groups <- unique(distance_df$Group)
+  
+  if (length(groups) >= 2) {
+    comparisons <- combn(groups, 2, simplify = FALSE)
+    
+    # Keep only comparisons where both groups have at least 2 observations
+    valid_comparisons <- list()
+    for (comp in comparisons) {
+      group1_count <- sum(distance_df$Group == comp[1])
+      group2_count <- sum(distance_df$Group == comp[2])
+      if (group1_count >= 2 && group2_count >= 2) {
+        valid_comparisons <- c(valid_comparisons, list(comp))
+      }
+    }
+    
+    if (length(valid_comparisons) > 0) {
+      if (!show_p_values) {
+        # Show significance stars (default)
+        p <- p + stat_compare_means(
+          comparisons = valid_comparisons,
+          method = test_method,
+          label = "p.signif",
+          size = 6,
+          tip.length = 0.02,
+          step.increase = step_increase,
+          vjust = 0.5,
+          bracket.size = 0.8
+        )
+      } else {
+        # Show actual p-values
+        p <- p + stat_compare_means(
+          comparisons = valid_comparisons,
+          method = test_method,
+          label = "p.format",
+          size = 4.5,
+          tip.length = 0.02,
+          step.increase = step_increase,
+          bracket.size = 0.8
+        )
+      }
+      
+      # Add test method to caption
+      p <- p + labs(caption = paste(p$labels$caption, paste0("\nTest: ", test_method)))
+    }
+  }
+  
+  # Save plot
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+  if (filename_suffix != "") {
+    filename_suffix <- paste0("_", filename_suffix)
+  }
+  plot_file <- file.path(output_dir, paste0("within_sample_bray_curtis", filename_suffix, ".png"))
+  ggsave(plot_file, p, width = 10, height = 7, dpi = 300)
+  cat("Saved plot to:", plot_file, "\n")
+  
+  return(p)
+}
+
+# ----------------------------------------------------
+# 6. Function to generate plots stratified by a categorical variable
+# ----------------------------------------------------
+plot_bray_curtis_by_categorical <- function(distance_df, patient_meta, 
+                                            cat_var, output_dir,
+                                            show_p_values = FALSE) {
+  
+  cat("\n--- Processing categorical variable:", cat_var, "---\n")
+  
+  # Select only the relevant categorical variable from patient_meta
+  if (!"No_Patient" %in% colnames(patient_meta)) {
+    cat("Error: No_Patient column not found in patient_meta\n")
+    return(NULL)
+  }
+  
+  patient_subset <- patient_meta %>% 
+    select(No_Patient, !!sym(cat_var)) %>%
+    drop_na(!!sym(cat_var))  # remove patients with NA for this variable
+  
+  # Merge distances with patient subset
+  df_merged <- distance_df %>%
+    left_join(patient_subset, by = c("PatientID" = "No_Patient"))
+  
+  # Check if merge was successful
+  if (!cat_var %in% colnames(df_merged)) {
+    cat("Warning: Variable", cat_var, "not found after merge. Skipping.\n")
+    return(NULL)
+  }
+  
+  # Remove rows with NA in this variable (again, just in case)
+  df_merged <- df_merged %>% drop_na(!!sym(cat_var))
+  
+  if (nrow(df_merged) == 0) {
+    cat("No data after removing NAs. Skipping.\n")
+    return(NULL)
+  }
+  
+  # Get levels of the categorical variable
+  levels_vec <- unique(df_merged[[cat_var]])
+  levels_vec <- levels_vec[!is.na(levels_vec)]
+  
+  if (length(levels_vec) == 0) {
+    cat("No levels found. Skipping.\n")
+    return(NULL)
+  }
+  
+  # Create subdirectory for this variable
+  var_dir <- file.path(output_dir, paste0("by_", cat_var))
+  dir.create(var_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  # For each level, generate a separate plot
+  for (lev in levels_vec) {
+    subset_df <- df_merged %>% filter(!!sym(cat_var) == lev)
+    
+    if (nrow(subset_df) < 3) {  # need at least some data to plot
+      cat("  Skipping level", lev, "- only", nrow(subset_df), "patients\n")
+      next
+    }
+    
+    # Create a safe filename part
+    safe_lev <- gsub("[^A-Za-z0-9]", "_", as.character(lev))
+    filename_suffix <- paste0(cat_var, "_", safe_lev)
+    
+    plot_title <- paste0("Within-Sample Bray-Curtis Distances\n",
+                         cat_var, " = ", lev)
+    
+    plot_bray_curtis_by_group(
+      distance_df = subset_df,
+      output_dir = var_dir,
+      show_p_values = show_p_values,
+      plot_title = plot_title,
+      filename_suffix = filename_suffix
+    )
+  }
+  
+  # Optionally, create a faceted plot with all levels together
+  if (length(levels_vec) > 1) {
+    # Create a faceted plot
+    df_merged$Group <- factor(df_merged$Group)
+    df_merged[[cat_var]] <- factor(df_merged[[cat_var]])
+    
+    # Define colors
+    group_colors <- c("A" = "#FF3333", "B" = "#3366FF", "C" = "#33CC33")
+    
+    p_facet <- ggplot(df_merged, aes(x = Group, y = BrayCurtis_Distance, fill = Group)) +
+      geom_boxplot(alpha = 0.7, outlier.shape = NA, width = 0.6) +
+      geom_jitter(width = 0.2, size = 2, alpha = 0.6, color = "black", height = 0) +
+      scale_fill_manual(values = group_colors) +
+      facet_wrap(as.formula(paste("~", cat_var)), nrow = 1) +
+      theme_bw(base_size = 14) +
+      labs(
+        title = paste("Within-Sample Bray-Curtis Distances by", cat_var),
+        x = "Group",
+        y = "Bray-Curtis Distance",
+        #caption = paste("N =", nrow(df_merged), "patients")
+      ) +
+      theme(
+        plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+        legend.position = "none",
+        strip.background = element_rect(fill = "lightgray"),
+        strip.text = element_text(size = 12, face = "bold")
+      ) +
+      ylim(0, 1.1)
+    
+    facet_file <- file.path(var_dir, paste0("facet_", cat_var, ".png"))
+    ggsave(facet_file, p_facet, width = 5 * length(levels_vec), height = 7, dpi = 300, limitsize = FALSE)
+    cat("Saved faceted plot to:", facet_file, "\n")
+  }
+}
+
+
+# ----------------------------------------------------
+# 7. Save results (distances, summary, statistics)
+# ----------------------------------------------------
+save_bray_curtis_results <- function(distance_df, output_dir) {
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  # Raw distances
+  distances_file <- file.path(output_dir, "bray_curtis_distances.csv")
+  write.csv(distance_df, distances_file, row.names = FALSE)
+  cat("Saved distances to:", distances_file, "\n")
+  
+  # Summary statistics per group
+  summary_stats <- distance_df %>%
+    group_by(Group) %>%
+    summarise(
+      N = n(),
+      Mean = mean(BrayCurtis_Distance),
+      SD = sd(BrayCurtis_Distance),
+      Median = median(BrayCurtis_Distance),
+      Min = min(BrayCurtis_Distance),
+      Max = max(BrayCurtis_Distance)
+    )
+  stats_file <- file.path(output_dir, "bray_curtis_summary.csv")
+  write.csv(summary_stats, stats_file, row.names = FALSE)
+  cat("Saved summary statistics to:", stats_file, "\n")
+  
+  # Pairwise statistical tests
+  if (length(unique(distance_df$Group)) >= 2) {
+    test_results <- data.frame()
+    groups <- unique(distance_df$Group)
+    comparisons <- combn(groups, 2, simplify = FALSE)
+    
+    for (comp in comparisons) {
+      group1 <- comp[1]
+      group2 <- comp[2]
+      
+      data1 <- distance_df$BrayCurtis_Distance[distance_df$Group == group1]
+      data2 <- distance_df$BrayCurtis_Distance[distance_df$Group == group2]
+      
+      if (length(data1) >= 2 && length(data2) >= 2) {
+        test <- wilcox.test(data1, data2, exact = FALSE)
+        
+        test_results <- rbind(test_results, data.frame(
+          Comparison = paste(group1, "vs", group2),
+          N_Group1 = length(data1),
+          N_Group2 = length(data2),
+          Mean_Group1 = mean(data1),
+          Mean_Group2 = mean(data2),
+          P_value = test$p.value,
+          P_value_rounded = round(test$p.value, 4),
+          Significance = ifelse(test$p.value < 0.001, "***",
+                               ifelse(test$p.value < 0.01, "**",
+                                      ifelse(test$p.value < 0.05, "*", "ns")))
+        ))
+      }
+    }
+    
+    if (nrow(test_results) > 0) {
+      tests_file <- file.path(output_dir, "bray_curtis_statistics.csv")
+      write.csv(test_results, tests_file, row.names = FALSE)
+      cat("Saved statistical tests to:", tests_file, "\n")
+    }
+  }
+}
+
+# ----------------------------------------------------
+# 8. Main analysis wrapper (updated)
+# ----------------------------------------------------
+analyze_within_sample_similarity <- function(ps_obj, 
+                                             output_dir = "within_sample_analysis",
+                                             show_p_values = FALSE,
+                                             categorical_vars = NULL) {
+  cat("=== WITHIN-SAMPLE SIMILARITY ANALYSIS ===\n")
+  
+  # Convert to relative abundance (optional but recommended)
+  cat("\nConverting to relative abundance...\n")
+  ps_rel <- transform_sample_counts(ps_obj, function(x) x / sum(x))
+  
+  # Calculate distances
+  cat("\nCalculating Bray-Curtis distances...\n")
+  distances <- calculate_within_sample_bray_curtis_simple(ps_rel)
+  
+  if (nrow(distances) == 0) {
+    cat("\nNo valid distances calculated. Analysis stopped.\n")
+    return(NULL)
+  }
+  
+  # Create main plot (overall, not stratified)
+  cat("\nCreating overall visualization...\n")
+  plot_bray_curtis_by_group(distances, output_dir, show_p_values = show_p_values)
+  
+  # Save results (distances, summary, stats)
+  cat("\nSaving results...\n")
+  save_bray_curtis_results(distances, output_dir)
+  
+  # If categorical variables are provided, generate stratified plots
+  if (!is.null(categorical_vars) && length(categorical_vars) > 0) {
+    cat("\n=== GENERATING STRATIFIED PLOTS ===\n")
+    
+    # Get patient-level metadata
+    patient_meta <- get_patient_metadata(ps_obj)
+    
+    # For each categorical variable, create plots
+    for (cat_var in categorical_vars) {
+      plot_bray_curtis_by_categorical(distances, patient_meta, cat_var, 
+                                      output_dir, show_p_values)
+    }
+  }
+  
+  # Print summary to console
+  cat("\n=== ANALYSIS SUMMARY ===\n")
+  cat("Total patients analyzed:", nrow(distances), "\n")
+  cat("\nSummary by group:\n")
+  print(distances %>%
+          group_by(Group) %>%
+          summarise(
+            N = n(),
+            Mean_Distance = round(mean(BrayCurtis_Distance), 4),
+            SD = round(sd(BrayCurtis_Distance), 4),
+            Median = round(median(BrayCurtis_Distance), 4)
+          ))
+  
+  cat("\n=== COMPLETE ===\n")
+  cat("Results saved in:", output_dir, "\n")
+  
+  return(list(distances = distances))
+}
+
+# ----------------------------------------------------
+# 9. Identify categorical variables from metadata
+# ----------------------------------------------------
+# Extract metadata as data frame
+ps_meta <- as.data.frame(sample_data(ps))
+
+# Find categorical variables (factor or character)
+categorical_vars <- names(ps_meta)[sapply(ps_meta, function(x) is.factor(x) || is.character(x))]
+
+# Remove variables we don't want to stratify by
+categorical_vars <- setdiff(categorical_vars, 
+                            c('Age', 'Group', 'Height', 'No_Patient', 'Weight', 'Timepoint', 'SampleID'))
+
+cat("Categorical variables for stratification:\n")
+print(categorical_vars)
+
+# ----------------------------------------------------
+# 10. RUN THE ANALYSIS WITH STRATIFICATION
+# ----------------------------------------------------
+results <- analyze_within_sample_similarity(
+  ps_obj = ps,
+  output_dir = "/home/sonec_iv/bray_curtis_MAGs",
+  show_p_values = FALSE,          # set to TRUE if you prefer p-values instead of stars
+  categorical_vars = categorical_vars
+)
+```

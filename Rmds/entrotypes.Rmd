@@ -1,0 +1,292 @@
+# enterotypes
+# libs
+
+```{r}
+# Load libraries
+library(phyloseq)
+library(tidyverse)
+library(vegan)
+library(cluster)
+library(fpc)
+library(ggalluvial)
+```
+
+# main
+```{r}
+
+# ============================================================
+# Load phyloseq
+# ============================================================
+ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
+
+# ============================================================================
+# ENTEROTYPE ANALYSIS FOR HUMAN GUT MICROBIOME (FINAL)
+# ============================================================================
+# Assumptions:
+#   - phyloseq object named 'ps'
+#   - sample_data contains: SampleID, Group (A/B/C), Timepoint (character: "-1", "-2")
+#   - SampleID encodes patient ID and timepoint, e.g., "A51-1" or "AO-201-2"
+# Outputs saved in folder "enterotype_analysis"
+# ============================================================================
+
+# ----------------------------- 0. Setup -------------------------------------
+output_dir <- "enterotype_analysis"
+if (!dir.exists(output_dir)) dir.create(output_dir)
+
+log_file <- file.path(output_dir, "analysis_log.txt")
+sink(log_file, split = TRUE)
+cat("Enterotype analysis started at:", date(), "\n\n")
+
+# Load libraries
+library(phyloseq)
+library(tidyverse)
+library(vegan)
+library(cluster)
+library(fpc)
+library(ggalluvial)
+
+# ----------------------------- 1. Parse SampleID ----------------------------
+cat("Parsing SampleID to extract SubjectID and Timepoint...\n")
+sample_df <- sample_data(ps) %>% data.frame()
+
+sample_df <- sample_df %>%
+  mutate(
+    Timepoint_parsed = as.numeric(str_extract(SampleID, "-\\d+$")),
+    SubjectID = str_replace(SampleID, "-\\d+$", "")
+  )
+sample_df$Timepoint <- as.character(sample_df$Timepoint_parsed)
+sample_data(ps) <- sample_df
+ps <- prune_samples(!is.na(sample_data(ps)$SubjectID) & !is.na(sample_data(ps)$Timepoint), ps)
+cat("Number of samples after parsing:", nsamples(ps), "\n")
+
+# ----------------------------- 2. Data preparation --------------------------
+cat("Agglomerating to genus, converting to relative abundances, filtering...\n")
+ps_genus <- tax_glom(ps, taxrank = "Genus", NArm = FALSE)
+ps_rel <- transform_sample_counts(ps_genus, function(x) x / sum(x))
+prev_threshold <- 0.1
+ps_filt <- filter_taxa(ps_rel, function(x) sum(x > 0) > (prev_threshold * nsamples(ps_rel)), prune = TRUE)
+
+abund <- as(otu_table(ps_filt), "matrix")
+if (taxa_are_rows(ps_filt)) abund <- t(abund)
+dist_mat <- vegdist(abund, method = "bray")
+cat("Final abundance matrix dimensions:", dim(abund), "\n")
+
+# ----------------------------- 3. Clustering indices ------------------------
+k_range <- 2:6
+set.seed(123)
+
+cat("\nComputing clustering indices...\n")
+pam_sil <- sapply(k_range, function(k) {
+  pam_fit <- pam(dist_mat, k = k)
+  mean(silhouette(pam_fit)[, 3])
+})
+
+ch_index <- sapply(k_range, function(k) {
+  pam_fit <- pam(dist_mat, k = k)
+  stats <- cluster.stats(dist_mat, pam_fit$clustering)
+  ifelse(is.null(stats$ch), NA, stats$ch)
+})
+
+db_index <- sapply(k_range, function(k) {
+  pam_fit <- pam(dist_mat, k = k)
+  stats <- cluster.stats(dist_mat, pam_fit$clustering)
+  ifelse(is.null(stats$davies.bouldin), NA, stats$davies.bouldin)
+})
+
+hc <- hclust(dist_mat, method = "ward.D2")
+hc_sil <- sapply(k_range, function(k) {
+  clusters <- cutree(hc, k = k)
+  mean(silhouette(clusters, dist_mat)[, 3])
+})
+
+# Convert to numeric
+pam_sil <- as.numeric(pam_sil)
+ch_index <- as.numeric(ch_index)
+db_index <- as.numeric(db_index)
+hc_sil <- as.numeric(hc_sil)
+
+# Normalize and combine
+index_df <- data.frame(
+  k = k_range,
+  Silhouette = pam_sil,
+  Calinski_Harabasz = ch_index / max(ch_index, na.rm = TRUE),
+  Davies_Bouldin = db_index / max(db_index, na.rm = TRUE),
+  Hierarchical_Sil = hc_sil
+)
+
+index_long <- index_df %>%
+  pivot_longer(cols = -k, names_to = "Index", values_to = "Value")
+
+p_indices <- ggplot(index_long, aes(x = k, y = Value, color = Index, group = Index)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = k_range) +
+  labs(title = "Comparison of clustering indices",
+       x = "Number of clusters (k)", y = "Normalized score") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+ggsave(file.path(output_dir, "clustering_indices_comparison.pdf"), p_indices, width = 8, height = 5)
+ggsave(file.path(output_dir, "clustering_indices_comparison.png"), p_indices, width = 8, height = 5, dpi = 300)
+
+# Choose optimal k (silhouette) – you can manually set to 3 if needed
+best_k_sil <- k_range[which.max(pam_sil)]
+cat("\nOptimal k by silhouette width:", best_k_sil, "(value:", round(max(pam_sil),4), ")\n")
+cat("All silhouette widths:\n")
+for (i in seq_along(k_range)) cat("  k =", k_range[i], ":", round(pam_sil[i],4), "\n")
+chosen_k <- best_k_sil   # change to 3 if literature suggests
+cat("Using k =", chosen_k, "for enterotype clustering.\n")
+
+# ----------------------------- 4. Assign enterotypes ------------------------
+pam_best <- pam(dist_mat, k = chosen_k)
+enterotypes <- pam_best$clustering
+sample_data(ps_filt)$Enterotype <- factor(enterotypes)
+
+enterotype_list <- sample_data(ps_filt) %>%
+  data.frame() %>%
+  dplyr::select(SampleID, Enterotype, Group, Timepoint, SubjectID) %>%
+  arrange(Enterotype, SampleID)
+write.csv(enterotype_list, file.path(output_dir, "samples_per_enterotype.csv"), row.names = FALSE)
+
+# ----------------------------- 5. Task 1: Group differences ----------------
+cat("\n=== Task 1: Enterotype differences between groups ===\n")
+cont_table <- table(sample_data(ps_filt)$Group, sample_data(ps_filt)$Enterotype)
+cat("Contingency table:\n")
+print(cont_table)
+
+chisq_test <- chisq.test(cont_table)
+cat("\nChi-square test:\n")
+print(chisq_test)
+write.csv(as.data.frame.matrix(cont_table), file.path(output_dir, "group_enterotype_contingency.csv"))
+
+# Stacked bar plot
+group_enterotype_prop <- prop.table(cont_table, margin = 1) %>%
+  as.data.frame() %>%
+  setNames(c("Group", "Enterotype", "Proportion"))
+p_bar <- ggplot(group_enterotype_prop, aes(x = Group, y = Proportion, fill = Enterotype)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(title = "Enterotype distribution by group", y = "Proportion") +
+  theme_minimal()
+ggsave(file.path(output_dir, "enterotype_by_group.pdf"), p_bar, width = 6, height = 4)
+ggsave(file.path(output_dir, "enterotype_by_group.png"), p_bar, width = 6, height = 4, dpi = 300)
+
+# ----------------------------- 6. Task 2: Paired transitions ----------------
+cat("\n=== Task 2: Enterotype changes between timepoints ===\n")
+
+sample_data(ps_filt)$Timepoint <- as.character(sample_data(ps_filt)$Timepoint)
+
+# Check pairing
+pairing_check <- sample_data(ps_filt) %>%
+  data.frame() %>%
+  group_by(SubjectID) %>%
+  summarise(n = n_distinct(Timepoint), times = paste(sort(unique(Timepoint)), collapse=","))
+cat("Subjects with incomplete timepoints:\n")
+print(pairing_check %>% filter(n != 2))
+
+valid_subjects <- pairing_check %>% filter(n == 2) %>% pull(SubjectID)
+ps_paired <- prune_samples(sample_data(ps_filt)$SubjectID %in% valid_subjects, ps_filt)
+cat("Kept", nsamples(ps_paired), "samples from", length(valid_subjects), "subjects\n")
+
+paired_df <- sample_data(ps_paired) %>%
+  data.frame() %>%
+  dplyr::select(SubjectID, Timepoint, Enterotype, Group, SampleID) %>%
+  arrange(SubjectID, as.numeric(Timepoint))
+
+paired_df$Timepoint_num <- as.numeric(paired_df$Timepoint)
+time_order <- sort(unique(paired_df$Timepoint_num))  # e.g., -2, -1
+time1_label <- paste0("Time ", time_order[1])
+time2_label <- paste0("Time ", time_order[2])
+
+wide_track <- paired_df %>%
+  arrange(SubjectID, Timepoint_num) %>%
+  group_by(SubjectID) %>%
+  summarise(
+    Group = first(Group),
+    Enterotype_T1 = Enterotype[Timepoint_num == time_order[1]],
+    Enterotype_T2 = Enterotype[Timepoint_num == time_order[2]],
+    Sample_T1 = SampleID[Timepoint_num == time_order[1]],
+    Sample_T2 = SampleID[Timepoint_num == time_order[2]]
+  ) %>%
+  ungroup()
+
+cat("Subjects in paired analysis:", nrow(wide_track), "\n")
+cat("Timepoint order: first =", time_order[1], ", second =", time_order[2], "\n")
+
+# Transition matrix
+transition <- table(wide_track$Enterotype_T1, wide_track$Enterotype_T2)
+cat("\nTransition matrix (rows = first timepoint, cols = second):\n")
+print(transition)
+
+# Subjects that changed
+changed <- wide_track[wide_track$Enterotype_T1 != wide_track$Enterotype_T2, ]
+cat("Number of subjects that changed:", nrow(changed), 
+    "(", round(100*nrow(changed)/nrow(wide_track),1), "%)\n")
+write.csv(changed, file.path(output_dir, "samples_that_changed_enterotype.csv"), row.names = FALSE)
+
+# Permutation test
+observed_agreement <- sum(diag(transition)) / sum(transition)
+n_perm <- 999
+set.seed(123)
+perm_agreement <- replicate(n_perm, {
+  swapped <- wide_track
+  for (i in 1:nrow(swapped)) {
+    if (runif(1) > 0.5) {
+      swapped[i, c("Enterotype_T1", "Enterotype_T2")] <- 
+        swapped[i, c("Enterotype_T2", "Enterotype_T1")]
+    }
+  }
+  tab <- table(swapped$Enterotype_T1, swapped$Enterotype_T2)
+  sum(diag(tab)) / sum(tab)
+})
+p_value <- mean(perm_agreement <= observed_agreement)
+cat("Permutation test p-value (change not random):", p_value, "\n")
+
+# Prepare data for plots
+trans_df <- as.data.frame(transition) %>%
+  setNames(c("Enterotype_at_first", "Enterotype_at_second", "Count"))
+
+# Heatmap (black text)
+p_heatmap <- ggplot(trans_df, aes(x = Enterotype_at_first, y = Enterotype_at_second, fill = Count)) +
+  geom_tile() +
+  geom_text(aes(label = Count), color = "black", size = 5) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = paste("Enterotype transitions:", time1_label, "→", time2_label),
+       x = time1_label, y = time2_label) +
+  theme_minimal()
+ggsave(file.path(output_dir, "enterotype_transitions_heatmap.pdf"), p_heatmap, width = 5, height = 4)
+
+# Bar plot (grouped by first timepoint)
+p_trans_bar <- ggplot(trans_df, aes(x = Enterotype_at_first, y = Count, fill = Enterotype_at_second)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = paste("Transitions from", time1_label),
+       x = paste("Enterotype at", time1_label),
+       y = "Number of subjects",
+       fill = paste("Enterotype at", time2_label)) +
+  theme_minimal() +
+  geom_text(aes(label = Count), position = position_dodge(width = 0.9), vjust = -0.5, size = 4)
+ggsave(file.path(output_dir, "enterotype_transitions_bars.pdf"), p_trans_bar, width = 6, height = 4)
+
+# Sankey plot
+sankey_df <- wide_track %>%
+  count(Enterotype_T1, Enterotype_T2) %>%
+  rename(Freq = n)
+p_sankey <- ggplot(sankey_df,
+                   aes(y = Freq, axis1 = Enterotype_T1, axis2 = Enterotype_T2)) +
+  geom_alluvium(aes(fill = Enterotype_T1), width = 1/12) +
+  geom_stratum(width = 1/12, fill = "grey85", color = "black") +
+  geom_label(stat = "stratum", aes(label = after_stat(stratum))) +
+  scale_x_discrete(limits = c(time1_label, time2_label), expand = c(0.05, 0.05)) +
+  labs(title = "Enterotype transitions", y = "Number of subjects") +
+  theme_minimal()
+ggsave(file.path(output_dir, "enterotype_transitions_sankey.pdf"), p_sankey, width = 7, height = 5)
+ggsave(file.path(output_dir, "enterotype_transitions_sankey.png"), p_sankey, width = 7, height = 5, dpi = 300)
+
+# ----------------------------- 7. Save final phyloseq object ----------------
+saveRDS(ps_filt, file.path(output_dir, "phyloseq_with_enterotypes.rds"))
+
+# ----------------------------- 8. Session info -----------------------------
+cat("\nAnalysis completed at:", date(), "\n")
+#sessionInfo()
+sink()
+cat("\nAll results saved in folder:", output_dir, "\n")
+```
+

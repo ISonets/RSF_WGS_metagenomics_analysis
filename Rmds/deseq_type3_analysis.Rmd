@@ -1,0 +1,992 @@
+#main v2
+```{r}
+# ============================================================================
+# COMBINED TIMEPOINT COMPARISON PLOTS (Type 3) - All Groups Together
+# ============================================================================
+# This script performs DESeq2 analysis for timepoint comparisons (-2 vs -1)
+# within each variable level and group, and then creates combined barplots
+# showing significant species for all groups in the same plot.
+# Features:
+# - Log fold change shrinkage (ashr)
+# - Top 20 positive and top 20 negative logFC species (up to 40 total)
+# - Ordered: most positive at top, most negative at bottom
+# - Legend: "Enriched in -2" (positive LFC, regular colors) and "Decreased in -2" (negative LFC, light colors)
+# ============================================================================
+
+# Load required libraries
+library(phyloseq)
+library(DESeq2)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+library(RColorBrewer)
+library(speedyseq)
+
+# ============================================================================
+# SECTION 1: SETUP
+# ============================================================================
+
+cat("Starting combined timepoint analysis...\n")
+
+# Create output directory
+output_dir <- "combined_timepoints_plot"
+if (!dir.exists(output_dir)) dir.create(output_dir)
+
+# Set up logging
+log_file <- file.path(output_dir, "analysis_log.txt")
+sink(log_file, split = TRUE)
+cat("Analysis started at:", as.character(Sys.time()), "\n\n")
+
+# ============================================================================
+# SECTION 2: DATA PREPARATION
+# ============================================================================
+
+# Read the phyloseq object (adjust path if needed)
+ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
+
+# Ensure factor levels are correct
+sample_data(ps)$Batch <- as.factor(sample_data(ps)$Batch)
+sample_data(ps)$Group <- as.factor(sample_data(ps)$Group)
+
+bad_batch_samples <- c("AO-203-2", "AO-207-1", "B-022-2", "MB124-2")
+
+if (length(bad_batch_samples) > 0) {
+  ps <- prune_samples(!(sample_names(ps) %in% bad_batch_samples), ps)
+  cat("Removed", length(bad_batch_samples), "samples\n")
+}
+
+# Clean taxonomy: remove prefixes and pipe suffixes
+clean_tax_table <- function(ps_obj) {
+  tax_table_df <- as.data.frame(as.matrix(tax_table(ps_obj)))
+  for(col in colnames(tax_table_df)) {
+    tax_table_df[[col]] <- gsub("\\|.*$", "", tax_table_df[[col]])
+    tax_table_df[[col]] <- gsub("^[a-z]__", "", tax_table_df[[col]])
+  }
+  tax_table(ps_obj) <- tax_table(as.matrix(tax_table_df))
+  return(ps_obj)
+}
+ps <- clean_tax_table(ps)
+
+# Aggregate to Species level
+cat("Aggregating taxa at Species level...\n")
+ps <- speedyseq::tax_glom(ps, taxrank = "Species", NArm = TRUE)
+cat("After tax_glom: ", ntaxa(ps), " unique species\n")
+
+# Filter core taxa (detection 1%, prevalence 10%)
+det <- 1/100
+prev <- 10/100
+core_taxa <- core_members(ps, detection = det, prevalence = prev, include.lowest = FALSE)
+ps_filtered <- prune_taxa(core_taxa, ps)
+cat("Filtered taxa count:", ntaxa(ps_filtered), "\n")
+
+# Define colors for groups
+group_colors <- c("A" = "#FF0000", "B" = "#0000FF", "C" = "#00FF00")
+lighten_color <- function(color, factor = 0.6) {
+  col <- col2rgb(color)
+  light_col <- col + (255 - col) * factor
+  rgb(light_col[1], light_col[2], light_col[3], maxColorValue = 255)
+}
+group_colors_light <- sapply(group_colors, lighten_color)
+names(group_colors_light) <- names(group_colors)
+
+# ============================================================================
+# SECTION 3: HELPER FUNCTION TO PREPARE DESeqDataSet (no batch correction)
+# ============================================================================
+prepare_dds <- function(ps_obj, design_formula) {
+  counts <- as(otu_table(ps_obj), "matrix")
+  coldata <- as.data.frame(sample_data(ps_obj))
+  
+  cat("        Count matrix shape:", nrow(counts), "taxa,", ncol(counts), "samples\n")
+  cat("        Any NA in counts:", any(is.na(counts)), "\n")
+  cat("        Any infinite in counts:", any(is.infinite(counts)), "\n")
+  
+  # Replace NA and infinite with 0
+  if (any(is.na(counts))) {
+    cat("        Found", sum(is.na(counts)), "NA values. Replacing with 0.\n")
+    counts[is.na(counts)] <- 0
+  }
+  if (any(is.infinite(counts))) {
+    cat("        Found", sum(is.infinite(counts)), "infinite values. Replacing with 0.\n")
+    counts[is.infinite(counts)] <- 0
+  }
+  
+  # Ensure non-negative
+  if (any(counts < 0, na.rm = TRUE)) {
+    cat("        Found negative counts. Setting to 0.\n")
+    counts[counts < 0] <- 0
+  }
+  
+  # Round to integers if not already
+  if (!all(counts == floor(counts))) {
+    cat("        Non-integer counts found, rounding...\n")
+    counts <- round(counts)
+  }
+  
+  # Ensure taxa are rows
+  if (!taxa_are_rows(ps_obj)) {
+    cat("        Transposing count matrix to have taxa as rows.\n")
+    counts <- t(counts)
+  }
+  
+  # Build DESeqDataSet
+  dds <- DESeqDataSetFromMatrix(countData = counts,
+                                colData = coldata,
+                                design = design_formula)
+  cat("        DESeqDataSet created successfully\n")
+  return(dds)
+}
+
+# ============================================================================
+# SECTION 4: ANALYSIS FUNCTION – Timepoints within Level & Group (with lfcShrink)
+# ============================================================================
+analyze_timepoints_within_level_group <- function(ps_obj, variable, var_levels, min_samples = 5) {
+  # Returns a list: for each group (A, B, C), a data frame of significant species
+  # with columns: Species, Mean_LogFC (shrunken), signif, Group, Direction
+  results_list <- list()
+  sample_df <- as.data.frame(sample_data(ps_obj))
+  
+  # For each variable level
+  for (var_level in var_levels) {
+    cat("    Level:", var_level, "\n")
+    level_samples <- sample_df[[variable]] == var_level & !is.na(sample_df[[variable]])
+    if (sum(level_samples) < min_samples * 2) {
+      cat("        Insufficient samples\n")
+      next
+    }
+    ps_level <- prune_samples(level_samples, ps_obj)
+    
+    # For each group
+    for (group in c("A", "B", "C")) {
+      cat("      Group:", group, "\n")
+      group_samples <- as.data.frame(sample_data(ps_level))
+      group_samples <- group_samples$Group == group
+      if (sum(group_samples) < min_samples * 2) {
+        cat("        Insufficient samples\n")
+        next
+      }
+      ps_group <- prune_samples(group_samples, ps_level)
+      group_df <- as.data.frame(sample_data(ps_group))
+      
+      # Ensure Timepoint is factor with correct levels
+      group_df$Timepoint_Factor <- factor(group_df$Timepoint, levels = c("-1", "-2"))
+      sample_data(ps_group) <- sample_data(group_df)
+      
+      # Check timepoint distribution
+      timepoint_counts <- table(group_df$Timepoint_Factor)
+      if (all(timepoint_counts >= min_samples) && length(timepoint_counts) == 2) {
+        cat("        Timepoints: -1 =", timepoint_counts["-1"], ", -2 =", timepoint_counts["-2"], "\n")
+        
+        tryCatch({
+          dds <- prepare_dds(ps_group, ~ Timepoint_Factor)
+          dds <- DESeq(dds, test = "Wald", fitType = "local", sfType = "poscounts", quiet = TRUE)
+          
+          # Use lfcShrink for stable log fold changes
+          res_shrink <- lfcShrink(dds, contrast = c("Timepoint_Factor", "-2", "-1"),
+                                  type = "ashr", quiet = TRUE)
+          
+          # Extract results
+          sigtab <- as.data.frame(res_shrink)
+          sigtab <- sigtab[which(sigtab$padj <= 0.05 & !is.na(sigtab$padj)), ]
+          sigtab <- sigtab[which(abs(sigtab$log2FoldChange) > 1), ]
+          
+          if (nrow(sigtab) > 0) {
+            # Add taxonomy info
+            tax_info <- as.data.frame(tax_table(ps_group)[rownames(sigtab), ])
+            sigtab <- cbind(sigtab, tax_info)
+            sigtab$Species <- gsub("\\|.*$", "", sigtab$Species)
+            sigtab <- sigtab[!is.na(sigtab$Species) & sigtab$Species != "", ]
+            
+            # Prepare plot data (using shrunken LFC)
+            plot_data <- data.frame(
+              Species = sigtab$Species,
+              Mean_LogFC = sigtab$log2FoldChange,
+              signif = case_when(
+                sigtab$padj <= 0.001 ~ "***",
+                sigtab$padj <= 0.01 ~ "**",
+                sigtab$padj <= 0.05 ~ "*",
+                TRUE ~ ""
+              ),
+              Group = group,
+              Direction = ifelse(sigtab$log2FoldChange > 0, "Enriched_in_-2", "Decreased_in_-2")
+            )
+            
+            # Save individual group results to CSV
+            clean_name <- gsub("[^a-zA-Z0-9]", "_", paste(variable, var_level, "Group", group, sep = "_"))
+            write.csv(sigtab, file.path(output_dir, paste0("type3_", clean_name, ".csv")), row.names = TRUE)
+            
+            # Store for combined plot
+            key <- paste(variable, var_level, group, sep = "_")
+            results_list[[key]] <- plot_data
+            cat("        Found", nrow(plot_data), "significant species (shrunken LFC)\n")
+          } else {
+            cat("        No significant species found\n")
+          }
+        }, error = function(e) {
+          cat("        Error:", e$message, "\n")
+        })
+      } else {
+        cat("        Insufficient samples in both timepoints\n")
+      }
+    }
+  }
+  return(results_list)
+}
+
+# ============================================================================
+# SECTION 5: PLOTTING FUNCTION – Combined Timepoint Comparison (with top 20/20 and correct ordering)
+# ============================================================================
+create_combined_timepoint_plot <- function(combined_data, title, output_dir, filename,
+                                          group_colors, group_colors_light) {
+  if (nrow(combined_data) == 0) {
+    cat("        No data to combine\n")
+    return(NULL)
+  }
+  
+  cat("        DEBUG - Creating combined Type 3 plot\n")
+  cat("        - Input rows:", nrow(combined_data), "\n")
+  cat("        - Unique species:", length(unique(combined_data$Species)), "\n")
+  cat("        - Groups present:", paste(unique(combined_data$Group), collapse = ", "), "\n")
+  
+  # Separate positive and negative logFC
+  pos_data <- combined_data %>% filter(Mean_LogFC > 0)
+  neg_data <- combined_data %>% filter(Mean_LogFC < 0)
+  
+  # Top 20 positive by descending logFC
+  if (nrow(pos_data) > 0) {
+    pos_ranking <- pos_data %>%
+      group_by(Species) %>%
+      summarise(max_logFC = max(Mean_LogFC), .groups = "drop") %>%
+      arrange(desc(max_logFC)) %>%
+      dplyr::slice_head(n = 20)
+    pos_species <- pos_ranking$Species
+  } else {
+    pos_species <- character(0)
+  }
+  
+  # Top 20 negative by ascending logFC (most negative first)
+  if (nrow(neg_data) > 0) {
+    neg_ranking <- neg_data %>%
+      group_by(Species) %>%
+      summarise(min_logFC = min(Mean_LogFC), .groups = "drop") %>%
+      arrange(min_logFC) %>%
+      dplyr::slice_head(n = 20)
+    neg_species <- neg_ranking$Species
+  } else {
+    neg_species <- character(0)
+  }
+  
+  # Combine selected species (up to 40)
+  selected_species <- unique(c(pos_species, neg_species))
+  combined_data <- combined_data %>% filter(Species %in% selected_species)
+  
+  # --- Ordering: positive descending, then negative ascending ---
+  if (length(pos_species) > 0) {
+    pos_ordered <- pos_data %>%
+      filter(Species %in% pos_species) %>%
+      group_by(Species) %>%
+      summarise(max_fc = max(Mean_LogFC)) %>%
+      arrange(desc(max_fc)) %>%
+      pull(Species)
+  } else {
+    pos_ordered <- character(0)
+  }
+  
+  if (length(neg_species) > 0) {
+    neg_ordered <- neg_data %>%
+      filter(Species %in% neg_species) %>%
+      group_by(Species) %>%
+      summarise(min_fc = min(Mean_LogFC)) %>%
+      arrange(min_fc) %>%
+      pull(Species)
+  } else {
+    neg_ordered <- character(0)
+  }
+  
+  # Ensure uniqueness: positive species first, then negative species not already in positive
+  pos_unique <- unique(pos_ordered)
+  neg_unique <- setdiff(unique(neg_ordered), pos_unique)
+  species_order <- c(pos_unique, neg_unique)
+  
+  # REVERSE the order so that most positive appears at the top of the plot
+  species_order <- rev(species_order)
+  
+  # Apply the factor levels
+  combined_data <- combined_data %>%
+    mutate(Species = factor(Species, levels = species_order))
+  
+  # Add a fill group factor combining Group and Direction
+  combined_data <- combined_data %>%
+    mutate(
+      FillGroup = paste(Group, Direction, sep = "_")
+    )
+  
+  # Define color palette for each group and direction
+  color_palette <- c()
+  for (g in c("A", "B", "C")) {
+    reg <- if(g == "A") "#FF0000" else if(g == "B") "#0000FF" else "#00FF00"
+    light <- if(g == "A") "#FF9999" else if(g == "B") "#9999FF" else "#99FF99"
+    color_palette[paste(g, "Enriched_in_-2", sep = "_")] <- reg
+    color_palette[paste(g, "Decreased_in_-2", sep = "_")] <- light
+  }
+  
+  # Set factor levels for FillGroup
+  combined_data <- combined_data %>%
+    mutate(
+      Group = factor(Group, levels = c("A", "B", "C")),
+      FillGroup = factor(FillGroup, levels = names(color_palette))
+    )
+  
+  # Create plot
+  p <- ggplot(combined_data, aes(x = Species, y = Mean_LogFC, fill = FillGroup)) +
+    geom_bar(stat = "identity", position = position_dodge(width = 0.9), width = 0.8) +
+    geom_text(aes(label = signif,
+                  y = ifelse(Mean_LogFC >= 0,
+                             Mean_LogFC + 0.1 * max(abs(combined_data$Mean_LogFC)),
+                             Mean_LogFC - 0.1 * max(abs(combined_data$Mean_LogFC)))),
+              position = position_dodge(width = 0.9), size = 3, vjust = 0.5) +
+    scale_fill_manual(
+      name = "Group & Direction",
+      values = color_palette,
+      labels = c("A_Enriched_in_-2" = "Group A (enriched in -2)",
+                 "A_Decreased_in_-2" = "Group A (decreased in -2)",
+                 "B_Enriched_in_-2" = "Group B (enriched in -2)",
+                 "B_Decreased_in_-2" = "Group B (decreased in -2)",
+                 "C_Enriched_in_-2" = "Group C (enriched in -2)",
+                 "C_Decreased_in_-2" = "Group C (decreased in -2)")
+    ) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+    coord_flip() +
+    theme_minimal() +
+    theme(
+      axis.text.y = element_text(face = "italic", size = 10, colour = 'black'),
+      axis.text.x = element_text(size = 12, colour = 'black'),
+      axis.title = element_text(size = 14, face = "bold"),
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      legend.position = "top",
+      legend.text = element_text(size = 12),
+      legend.title = element_text(size = 13, face = "bold"),
+      plot.margin = margin(1, 1, 1, 1, "cm")
+    ) +
+    labs(
+      title = paste("Timepoint comparisons (-2 vs -1):", title),
+      x = "Species",
+      y = "Log2 Fold Change (Timepoint -2 vs -1)\n(positive = enriched in -2, negative = decreased in -2)"
+    )
+  
+  # Save plot
+  n_species <- length(unique(combined_data$Species))
+  plot_height <- max(8, n_species * 0.4)
+  plot_width <- 16
+  ggsave(file.path(output_dir, paste0("plot_", filename, "_combined.pdf")),
+         p, width = plot_width, height = plot_height, limitsize = FALSE)
+  ggsave(file.path(output_dir, paste0("plot_", filename, "_combined.png")),
+         p, width = plot_width, height = plot_height, dpi = 300, limitsize = FALSE)
+  
+  cat("        ✓ Combined plot saved with", n_species, "species (", nrow(combined_data), "bars)\n")
+  return(p)
+}
+
+# ============================================================================
+# SECTION 6: MAIN ANALYSIS LOOP
+# ============================================================================
+
+cat("\nStarting combined timepoint analysis...\n")
+
+# Define the variable to analyze (you can change this list)
+categorical_vars <- c("BMI_group","Antibiotics_Last_Year", "Proton_Pump_Inhibitors","Hypoglycemic_Drugs","BMI_group")
+# For each variable
+for (variable in categorical_vars) {
+  cat("\n", strrep("=", 60), "\n")
+  cat("Variable:", variable, "\n")
+  cat(strrep("=", 60), "\n")
+  
+  # Get unique levels from metadata
+  sample_df <- as.data.frame(sample_data(ps_filtered))
+  if (!(variable %in% colnames(sample_df))) {
+    cat("Variable not found in sample data. Skipping.\n")
+    next
+  }
+  var_levels <- unique(sample_df[[variable]])
+  var_levels <- var_levels[!is.na(var_levels)]
+  cat("Levels:", paste(var_levels, collapse = ", "), "\n")
+  
+  # Run analysis for this variable
+  results <- analyze_timepoints_within_level_group(ps_filtered, variable, var_levels, min_samples = 5)
+  
+  # Now create combined plots for each level
+  cat("\nCreating combined plots...\n")
+  for (var_level in var_levels) {
+    # Collect data from all groups for this level
+    combined_data <- data.frame()
+    for (group in c("A", "B", "C")) {
+      key <- paste(variable, var_level, group, sep = "_")
+      if (!is.null(results[[key]])) {
+        combined_data <- rbind(combined_data, results[[key]])
+      }
+    }
+    if (nrow(combined_data) > 0) {
+      clean_name <- gsub("[^a-zA-Z0-9]", "_", paste(variable, var_level, sep = "_"))
+      title <- paste(variable, "-", var_level)
+      create_combined_timepoint_plot(combined_data, title, output_dir, clean_name,
+                                     group_colors, group_colors_light)
+    } else {
+      cat("  No data for level:", var_level, "\n")
+    }
+  }
+}
+
+cat("\nAnalysis completed at:", as.character(Sys.time()), "\n")
+sink()
+```
+
+
+#main v3(no grouping by categorical_vars)
+```{r}
+# ============================================================================
+# COMBINED TIMEPOINT COMPARISON PLOTS (Type 3) - All Groups Together
+# ============================================================================
+# This script performs DESeq2 analysis for timepoint comparisons (-2 vs -1)
+# within each variable level and group, and then creates combined barplots
+# showing significant species for all groups in the same plot.
+# Features:
+# - Log fold change shrinkage (ashr)
+# - Top 20 positive and top 20 negative logFC species (up to 40 total)
+# - Ordered: most positive at top, most negative at bottom
+# - Legend: "Enriched in -2" (positive LFC, regular colors) and "Decreased in -2" (negative LFC, light colors)
+# 
+# NEW: Global analysis (no categorical variable) – compare timepoints per group
+#      and produce combined + individual plots.
+# ============================================================================
+
+# Load required libraries
+library(phyloseq)
+library(DESeq2)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+library(RColorBrewer)
+library(speedyseq)
+
+# ============================================================================
+# SECTION 1: SETUP
+# ============================================================================
+
+cat("Starting combined timepoint analysis...\n")
+
+# Create output directory
+output_dir <- "combined_timepoints_plot"
+if (!dir.exists(output_dir)) dir.create(output_dir)
+
+# Set up logging
+log_file <- file.path(output_dir, "analysis_log.txt")
+sink(log_file, split = TRUE)
+cat("Analysis started at:", as.character(Sys.time()), "\n\n")
+
+# ============================================================================
+# SECTION 2: DATA PREPARATION
+# ============================================================================
+
+# Read the phyloseq object (adjust path if needed)
+ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
+
+# Ensure factor levels are correct
+sample_data(ps)$Batch <- as.factor(sample_data(ps)$Batch)
+sample_data(ps)$Group <- as.factor(sample_data(ps)$Group)
+
+bad_batch_samples <- c("AO-203-2", "AO-207-1", "B-022-2", "MB124-2")
+
+if (length(bad_batch_samples) > 0) {
+  ps <- prune_samples(!(sample_names(ps) %in% bad_batch_samples), ps)
+  cat("Removed", length(bad_batch_samples), "samples\n")
+}
+
+# Clean taxonomy: remove prefixes and pipe suffixes
+clean_tax_table <- function(ps_obj) {
+  tax_table_df <- as.data.frame(as.matrix(tax_table(ps_obj)))
+  for(col in colnames(tax_table_df)) {
+    tax_table_df[[col]] <- gsub("\\|.*$", "", tax_table_df[[col]])
+    tax_table_df[[col]] <- gsub("^[a-z]__", "", tax_table_df[[col]])
+  }
+  tax_table(ps_obj) <- tax_table(as.matrix(tax_table_df))
+  return(ps_obj)
+}
+ps <- clean_tax_table(ps)
+
+# Aggregate to Species level
+cat("Aggregating taxa at Species level...\n")
+ps <- speedyseq::tax_glom(ps, taxrank = "Species", NArm = TRUE)
+cat("After tax_glom: ", ntaxa(ps), " unique species\n")
+
+# Filter core taxa (detection 1%, prevalence 10%)
+det <- 1/100
+prev <- 10/100
+core_taxa <- core_members(ps, detection = det, prevalence = prev, include.lowest = FALSE)
+ps_filtered <- prune_taxa(core_taxa, ps)
+cat("Filtered taxa count:", ntaxa(ps_filtered), "\n")
+
+# Define colors for groups
+group_colors <- c("A" = "#FF0000", "B" = "#0000FF", "C" = "#00FF00")
+lighten_color <- function(color, factor = 0.6) {
+  col <- col2rgb(color)
+  light_col <- col + (255 - col) * factor
+  rgb(light_col[1], light_col[2], light_col[3], maxColorValue = 255)
+}
+group_colors_light <- sapply(group_colors, lighten_color)
+names(group_colors_light) <- names(group_colors)
+
+# ============================================================================
+# SECTION 3: HELPER FUNCTION TO PREPARE DESeqDataSet (no batch correction)
+# ============================================================================
+prepare_dds <- function(ps_obj, design_formula) {
+  counts <- as(otu_table(ps_obj), "matrix")
+  coldata <- as.data.frame(sample_data(ps_obj))
+  
+  cat("        Count matrix shape:", nrow(counts), "taxa,", ncol(counts), "samples\n")
+  cat("        Any NA in counts:", any(is.na(counts)), "\n")
+  cat("        Any infinite in counts:", any(is.infinite(counts)), "\n")
+  
+  # Replace NA and infinite with 0
+  if (any(is.na(counts))) {
+    cat("        Found", sum(is.na(counts)), "NA values. Replacing with 0.\n")
+    counts[is.na(counts)] <- 0
+  }
+  if (any(is.infinite(counts))) {
+    cat("        Found", sum(is.infinite(counts)), "infinite values. Replacing with 0.\n")
+    counts[is.infinite(counts)] <- 0
+  }
+  
+  # Ensure non-negative
+  if (any(counts < 0, na.rm = TRUE)) {
+    cat("        Found negative counts. Setting to 0.\n")
+    counts[counts < 0] <- 0
+  }
+  
+  # Round to integers if not already
+  if (!all(counts == floor(counts))) {
+    cat("        Non-integer counts found, rounding...\n")
+    counts <- round(counts)
+  }
+  
+  # Ensure taxa are rows
+  if (!taxa_are_rows(ps_obj)) {
+    cat("        Transposing count matrix to have taxa as rows.\n")
+    counts <- t(counts)
+  }
+  
+  # Build DESeqDataSet
+  dds <- DESeqDataSetFromMatrix(countData = counts,
+                                colData = coldata,
+                                design = design_formula)
+  cat("        DESeqDataSet created successfully\n")
+  return(dds)
+}
+
+# ============================================================================
+# SECTION 4: GLOBAL TIMEPOINT ANALYSIS (no categorical variable)
+# ============================================================================
+analyze_global_timepoints <- function(ps_obj, min_samples = 5) {
+  # Returns a list: for each group (A, B, C), a data frame of significant species
+  # with columns: Species, Mean_LogFC (shrunken), signif, Group, Direction
+  results_list <- list()
+  sample_df <- as.data.frame(sample_data(ps_obj))
+  
+  # For each group, run analysis on all samples of that group (no additional stratification)
+  for (group in c("A", "B", "C")) {
+    cat("\n  Global analysis - Group:", group, "\n")
+    group_samples <- sample_df$Group == group
+    if (sum(group_samples) < min_samples * 2) {
+      cat("        Insufficient samples\n")
+      next
+    }
+    ps_group <- prune_samples(group_samples, ps_obj)
+    group_df <- as.data.frame(sample_data(ps_group))
+    
+    # Ensure Timepoint is factor with correct levels
+    group_df$Timepoint_Factor <- factor(group_df$Timepoint, levels = c("-1", "-2"))
+    sample_data(ps_group) <- sample_data(group_df)
+    
+    # Check timepoint distribution
+    timepoint_counts <- table(group_df$Timepoint_Factor)
+    if (all(timepoint_counts >= min_samples) && length(timepoint_counts) == 2) {
+      cat("        Timepoints: -1 =", timepoint_counts["-1"], ", -2 =", timepoint_counts["-2"], "\n")
+      
+      tryCatch({
+        dds <- prepare_dds(ps_group, ~ Timepoint_Factor)
+        dds <- DESeq(dds, test = "Wald", fitType = "local", sfType = "poscounts", quiet = TRUE)
+        
+        # Use lfcShrink for stable log fold changes
+        res_shrink <- lfcShrink(dds, contrast = c("Timepoint_Factor", "-2", "-1"),
+                                type = "ashr", quiet = TRUE)
+        
+        # Extract results
+        sigtab <- as.data.frame(res_shrink)
+        sigtab <- sigtab[which(sigtab$padj <= 0.05 & !is.na(sigtab$padj)), ]
+        sigtab <- sigtab[which(abs(sigtab$log2FoldChange) > 1), ]
+        
+        if (nrow(sigtab) > 0) {
+          # Add taxonomy info
+          tax_info <- as.data.frame(tax_table(ps_group)[rownames(sigtab), ])
+          sigtab <- cbind(sigtab, tax_info)
+          sigtab$Species <- gsub("\\|.*$", "", sigtab$Species)
+          sigtab <- sigtab[!is.na(sigtab$Species) & sigtab$Species != "", ]
+          
+          # Prepare plot data
+          plot_data <- data.frame(
+            Species = sigtab$Species,
+            Mean_LogFC = sigtab$log2FoldChange,
+            signif = case_when(
+              sigtab$padj <= 0.001 ~ "***",
+              sigtab$padj <= 0.01 ~ "**",
+              sigtab$padj <= 0.05 ~ "*",
+              TRUE ~ ""
+            ),
+            Group = group,
+            Direction = ifelse(sigtab$log2FoldChange > 0, "Enriched_in_-2", "Decreased_in_-2")
+          )
+          
+          # Save individual group results to CSV
+          clean_name <- paste0("global_Group_", group)
+          write.csv(sigtab, file.path(output_dir, paste0("global_", clean_name, ".csv")), row.names = TRUE)
+          
+          results_list[[group]] <- plot_data
+          cat("        Found", nrow(plot_data), "significant species (shrunken LFC)\n")
+        } else {
+          cat("        No significant species found\n")
+        }
+      }, error = function(e) {
+        cat("        Error:", e$message, "\n")
+      })
+    } else {
+      cat("        Insufficient samples in both timepoints\n")
+    }
+  }
+  return(results_list)
+}
+
+# ============================================================================
+# SECTION 5: PLOTTING FUNCTIONS (combined and individual)
+# ============================================================================
+
+# Function to create a plot for a single group (no grouping by group in the plot itself)
+create_single_group_plot <- function(plot_data, title, output_dir, filename,
+                                     group_color, group_color_light) {
+  if (nrow(plot_data) == 0) {
+    cat("        No data to plot\n")
+    return(NULL)
+  }
+  
+  cat("        DEBUG - Creating single group plot for", unique(plot_data$Group), "\n")
+  cat("        - Input rows:", nrow(plot_data), "\n")
+  cat("        - Unique species:", length(unique(plot_data$Species)), "\n")
+  
+  # Separate positive and negative
+  pos_data <- plot_data %>% filter(Mean_LogFC > 0)
+  neg_data <- plot_data %>% filter(Mean_LogFC < 0)
+  
+  # Top 20 positive and negative
+  if (nrow(pos_data) > 20) {
+    pos_data <- pos_data %>% arrange(desc(Mean_LogFC)) %>% slice_head(n = 20)
+  }
+  if (nrow(neg_data) > 20) {
+    neg_data <- neg_data %>% arrange(Mean_LogFC) %>% slice_head(n = 20)
+  }
+  
+  plot_data <- bind_rows(pos_data, neg_data)
+  
+  # Order: positive descending, then negative ascending, then reverse
+  pos_ordered <- plot_data %>% filter(Mean_LogFC > 0) %>% arrange(desc(Mean_LogFC)) %>% pull(Species)
+  neg_ordered <- plot_data %>% filter(Mean_LogFC < 0) %>% arrange(Mean_LogFC) %>% pull(Species)
+  species_order <- rev(c(pos_ordered, neg_ordered))
+  
+  plot_data <- plot_data %>%
+    mutate(Species = factor(Species, levels = species_order))
+  
+  # Color based on direction (regular for positive, light for negative)
+  plot_data <- plot_data %>%
+    mutate(FillColor = ifelse(Mean_LogFC > 0, group_color, group_color_light))
+  
+  p <- ggplot(plot_data, aes(x = Species, y = Mean_LogFC, fill = FillColor)) +
+    geom_bar(stat = "identity", width = 0.8) +
+    geom_text(aes(label = signif,
+                  y = ifelse(Mean_LogFC >= 0,
+                             Mean_LogFC + 0.1 * max(abs(plot_data$Mean_LogFC)),
+                             Mean_LogFC - 0.1 * max(abs(plot_data$Mean_LogFC)))),
+              size = 3, vjust = 0.5) +
+    scale_fill_identity(guide = "legend", 
+                        labels = c(group_color = "Enriched in -2", 
+                                   group_color_light = "Decreased in -2"),
+                        name = "Direction") +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+    coord_flip() +
+    theme_minimal() +
+    theme(
+      axis.text.y = element_text(face = "italic", size = 10, colour = 'black'),
+      axis.text.x = element_text(size = 12, colour = 'black'),
+      axis.title = element_text(size = 14, face = "bold"),
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      legend.position = "top",
+      legend.text = element_text(size = 12),
+      legend.title = element_text(size = 13, face = "bold"),
+      plot.margin = margin(1, 1, 1, 1, "cm")
+    ) +
+    labs(
+      title = title,
+      x = "Species",
+      y = "Log2 Fold Change (Timepoint -2 vs -1)\n(positive = enriched in -2, negative = decreased in -2)"
+    )
+  
+  n_species <- length(unique(plot_data$Species))
+  plot_height <- max(8, n_species * 0.4)
+  plot_width <- 14
+  ggsave(file.path(output_dir, paste0("plot_", filename, ".pdf")),
+         p, width = plot_width, height = plot_height, limitsize = FALSE)
+  ggsave(file.path(output_dir, paste0("plot_", filename, ".png")),
+         p, width = plot_width, height = plot_height, dpi = 300, limitsize = FALSE)
+  
+  cat("        ✓ Single group plot saved with", n_species, "species (", nrow(plot_data), "bars)\n")
+  return(p)
+}
+
+# Combined plot function (as before, but using the same logic)
+create_combined_timepoint_plot <- function(combined_data, title, output_dir, filename,
+                                          group_colors, group_colors_light) {
+  if (nrow(combined_data) == 0) {
+    cat("        No data to combine\n")
+    return(NULL)
+  }
+  
+  cat("        DEBUG - Creating combined Type 3 plot\n")
+  cat("        - Input rows:", nrow(combined_data), "\n")
+  cat("        - Unique species:", length(unique(combined_data$Species)), "\n")
+  cat("        - Groups present:", paste(unique(combined_data$Group), collapse = ", "), "\n")
+  
+  # Separate positive and negative logFC
+  pos_data <- combined_data %>% filter(Mean_LogFC > 0)
+  neg_data <- combined_data %>% filter(Mean_LogFC < 0)
+  
+  # Top 20 positive by descending logFC
+  if (nrow(pos_data) > 0) {
+    pos_ranking <- pos_data %>%
+      group_by(Species) %>%
+      summarise(max_logFC = max(Mean_LogFC), .groups = "drop") %>%
+      arrange(desc(max_logFC)) %>%
+      dplyr::slice_head(n = 20)
+    pos_species <- pos_ranking$Species
+  } else {
+    pos_species <- character(0)
+  }
+  
+  # Top 20 negative by ascending logFC (most negative first)
+  if (nrow(neg_data) > 0) {
+    neg_ranking <- neg_data %>%
+      group_by(Species) %>%
+      summarise(min_logFC = min(Mean_LogFC), .groups = "drop") %>%
+      arrange(min_logFC) %>%
+      dplyr::slice_head(n = 20)
+    neg_species <- neg_ranking$Species
+  } else {
+    neg_species <- character(0)
+  }
+  
+  # Combine selected species (up to 40)
+  selected_species <- unique(c(pos_species, neg_species))
+  combined_data <- combined_data %>% filter(Species %in% selected_species)
+  
+  # --- Ordering: positive descending, then negative ascending ---
+  if (length(pos_species) > 0) {
+    pos_ordered <- pos_data %>%
+      filter(Species %in% pos_species) %>%
+      group_by(Species) %>%
+      summarise(max_fc = max(Mean_LogFC)) %>%
+      arrange(desc(max_fc)) %>%
+      pull(Species)
+  } else {
+    pos_ordered <- character(0)
+  }
+  
+  if (length(neg_species) > 0) {
+    neg_ordered <- neg_data %>%
+      filter(Species %in% neg_species) %>%
+      group_by(Species) %>%
+      summarise(min_fc = min(Mean_LogFC)) %>%
+      arrange(min_fc) %>%
+      pull(Species)
+  } else {
+    neg_ordered <- character(0)
+  }
+  
+  # Ensure uniqueness: positive species first, then negative species not already in positive
+  pos_unique <- unique(pos_ordered)
+  neg_unique <- setdiff(unique(neg_ordered), pos_unique)
+  species_order <- c(pos_unique, neg_unique)
+  
+  # REVERSE the order so that most positive appears at the top of the plot
+  species_order <- rev(species_order)
+  
+  # Apply the factor levels
+  combined_data <- combined_data %>%
+    mutate(Species = factor(Species, levels = species_order))
+  
+  # Add a fill group factor combining Group and Direction
+  combined_data <- combined_data %>%
+    mutate(
+      FillGroup = paste(Group, Direction, sep = "_")
+    )
+  
+  # Define color palette for each group and direction
+  color_palette <- c()
+  for (g in c("A", "B", "C")) {
+    reg <- if(g == "A") "#FF0000" else if(g == "B") "#0000FF" else "#00FF00"
+    light <- if(g == "A") "#FF9999" else if(g == "B") "#9999FF" else "#99FF99"
+    color_palette[paste(g, "Enriched_in_-2", sep = "_")] <- reg
+    color_palette[paste(g, "Decreased_in_-2", sep = "_")] <- light
+  }
+  
+  # Set factor levels for FillGroup
+  combined_data <- combined_data %>%
+    mutate(
+      Group = factor(Group, levels = c("A", "B", "C")),
+      FillGroup = factor(FillGroup, levels = names(color_palette))
+    )
+  
+  # Create plot
+  p <- ggplot(combined_data, aes(x = Species, y = Mean_LogFC, fill = FillGroup)) +
+    geom_bar(stat = "identity", position = position_dodge(width = 0.9), width = 0.8) +
+    geom_text(aes(label = signif,
+                  y = ifelse(Mean_LogFC >= 0,
+                             Mean_LogFC + 0.1 * max(abs(combined_data$Mean_LogFC)),
+                             Mean_LogFC - 0.1 * max(abs(combined_data$Mean_LogFC)))),
+              position = position_dodge(width = 0.9), size = 3, vjust = 0.5) +
+    scale_fill_manual(
+      name = "Group & Direction",
+      values = color_palette,
+      labels = c("A_Enriched_in_-2" = "Group A (enriched in -2)",
+                 "A_Decreased_in_-2" = "Group A (decreased in -2)",
+                 "B_Enriched_in_-2" = "Group B (enriched in -2)",
+                 "B_Decreased_in_-2" = "Group B (decreased in -2)",
+                 "C_Enriched_in_-2" = "Group C (enriched in -2)",
+                 "C_Decreased_in_-2" = "Group C (decreased in -2)")
+    ) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+    coord_flip() +
+    theme_minimal() +
+    theme(
+      axis.text.y = element_text(face = "italic", size = 10, colour = 'black'),
+      axis.text.x = element_text(size = 12, colour = 'black'),
+      axis.title = element_text(size = 14, face = "bold"),
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      legend.position = "top",
+      legend.text = element_text(size = 12),
+      legend.title = element_text(size = 13, face = "bold"),
+      plot.margin = margin(1, 1, 1, 1, "cm")
+    ) +
+    labs(
+      title = paste("Timepoint comparisons (-2 vs -1):", title),
+      x = "Species",
+      y = "Log2 Fold Change (Timepoint -2 vs -1)\n(positive = enriched in -2, negative = decreased in -2)"
+    )
+  
+  # Save plot
+  n_species <- length(unique(combined_data$Species))
+  plot_height <- max(8, n_species * 0.4)
+  plot_width <- 16
+  ggsave(file.path(output_dir, paste0("plot_", filename, "_combined.pdf")),
+         p, width = plot_width, height = plot_height, limitsize = FALSE)
+  ggsave(file.path(output_dir, paste0("plot_", filename, "_combined.png")),
+         p, width = plot_width, height = plot_height, dpi = 300, limitsize = FALSE)
+  
+  cat("        ✓ Combined plot saved with", n_species, "species (", nrow(combined_data), "bars)\n")
+  return(p)
+}
+
+# ============================================================================
+# SECTION 6: GLOBAL ANALYSIS EXECUTION (no categorical variables)
+# ============================================================================
+
+cat("\n", strrep("=", 60), "\n")
+cat("GLOBAL TIMEPOINT ANALYSIS (no categorical variable)\n")
+cat(strrep("=", 60), "\n")
+
+# Run global analysis
+global_results <- analyze_global_timepoints(ps_filtered, min_samples = 5)
+
+# Create individual plots for each group
+for (group in c("A", "B", "C")) {
+  if (!is.null(global_results[[group]])) {
+    group_data <- global_results[[group]]
+    # Determine colors for this group
+    reg_color <- group_colors[group]
+    light_color <- group_colors_light[group]
+    title <- paste("Timepoint -2 vs -1 - Group", group)
+    filename <- paste0("global_Group_", group)
+    create_single_group_plot(group_data, title, output_dir, filename,
+                             reg_color, light_color)
+  } else {
+    cat("No significant results for Group", group, "\n")
+  }
+}
+
+# Create combined plot from all groups' results
+combined_global_data <- bind_rows(global_results)
+if (nrow(combined_global_data) > 0) {
+  title <- "Global - All Groups"
+  filename <- "global_all_groups"
+  create_combined_timepoint_plot(combined_global_data, title, output_dir, filename,
+                                 group_colors, group_colors_light)
+} else {
+  cat("No data for combined global plot.\n")
+}
+
+# ============================================================================
+# SECTION 7: OPTIONAL – CATEGORICAL VARIABLES ANALYSIS (commented out)
+# ============================================================================
+# If you want to run the original categorical analysis, uncomment the block below.
+# Otherwise, skip.
+
+cat("\n", strrep("=", 60), "\n")
+cat("Categorical analysis SKIPPED. To run, uncomment the code in Section 7.\n")
+cat(strrep("=", 60), "\n")
+
+# The original categorical loop is commented out to avoid confusion.
+# To enable it, remove the comment markers.
+
+# categorical_vars <- c("BMI_group","Antibiotics_Last_Year", "Proton_Pump_Inhibitors","Hypoglycemic_Drugs")
+# for (variable in categorical_vars) {
+#   cat("\n", strrep("=", 60), "\n")
+#   cat("Variable:", variable, "\n")
+#   cat(strrep("=", 60), "\n")
+#   sample_df <- as.data.frame(sample_data(ps_filtered))
+#   if (!(variable %in% colnames(sample_df))) {
+#     cat("Variable not found in sample data. Skipping.\n")
+#     next
+#   }
+#   var_levels <- unique(sample_df[[variable]])
+#   var_levels <- var_levels[!is.na(var_levels)]
+#   cat("Levels:", paste(var_levels, collapse = ", "), "\n")
+#   results <- analyze_timepoints_within_level_group(ps_filtered, variable, var_levels, min_samples = 5)
+#   cat("\nCreating combined plots...\n")
+#   for (var_level in var_levels) {
+#     combined_data <- data.frame()
+#     for (group in c("A", "B", "C")) {
+#       key <- paste(variable, var_level, group, sep = "_")
+#       if (!is.null(results[[key]])) {
+#         combined_data <- rbind(combined_data, results[[key]])
+#       }
+#     }
+#     if (nrow(combined_data) > 0) {
+#       clean_name <- gsub("[^a-zA-Z0-9]", "_", paste(variable, var_level, sep = "_"))
+#       title <- paste(variable, "-", var_level)
+#       create_combined_timepoint_plot(combined_data, title, output_dir, clean_name,
+#                                      group_colors, group_colors_light)
+#     } else {
+#       cat("  No data for level:", var_level, "\n")
+#     }
+#   }
+# }
+
+cat("\nAnalysis completed at:", as.character(Sys.time()), "\n")
+sink()
+```
+

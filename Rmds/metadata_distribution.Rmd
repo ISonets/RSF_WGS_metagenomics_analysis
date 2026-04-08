@@ -1,0 +1,131 @@
+#libs
+```{r}
+# Load required libraries
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+```
+
+
+# metadata
+```{r}
+ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
+#ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_dups_samples_batch_check_all_physeq_wgs.rds')
+#ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_RESEQUENCING_wgs.rds')
+#ps@sam_data$Age = as.numeric(ps@sam_data$Age)
+#ps@sam_data$Weight <- as.numeric(ps@sam_data$Weight)
+#ps@sam_data$Height <- as.numeric(ps@sam_data$Height)
+#saveRDS(ps, '/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
+#meta <- read_csv('metadata_eng_prepared.csv')
+
+bad_batch_samples <- c("AO-203-2", "AO-207-1", "B-022-2", "MB124-2")
+
+if (length(bad_batch_samples) > 0) {
+  ps <- prune_samples(!(sample_names(ps) %in% bad_batch_samples), ps)
+  cat("Removed", length(bad_batch_samples), "samples\n")
+}
+# Get categorical variables (already determined)
+# Remove 'timepoint' and 'Group' (assuming 'Group' is your group variable name)
+
+meta <- data.frame(sample_data(ps))
+
+# Check the structure of Timepoint column
+cat("Class of Timepoint column:", class(meta$Timepoint), "\n")
+cat("Unique values in Timepoint:", unique(meta$Timepoint), "\n")
+
+meta <- meta %>% 
+  filter(Timepoint == '-1')
+
+cat("\nNumber of samples in Timepoint == '-1':", nrow(meta), "\n")
+
+# Using the entire meta dataframe (no timepoint filtering)
+categorical_vars <- names(meta)[sapply(meta, function(x) is.factor(x) || is.character(x))]
+
+# Remove 'timepoint' from the list if it exists
+# Remove 'Group' from categorical_vars since that's our grouping variable
+categorical_vars <- setdiff(categorical_vars, c('Age',"Group", 'Height', 'No_Patient','Weight','Timepoint','SampleID'))
+
+# Check what we have
+cat("Group variable: Group\n")
+cat("Number of groups:", length(unique(meta$Group)), "\n")
+cat("Categorical variables to plot:", length(categorical_vars), "\n")
+print(categorical_vars)
+cat("\nTotal observations in dataset:", nrow(meta), "\n")
+
+# Select only the columns we need
+df_f <- meta %>%
+  select(Group, all_of(categorical_vars))
+
+# Create long format while preserving Group
+df_long <- df_f %>%
+  pivot_longer(cols = -Group,
+               names_to = "Column_Name",
+               values_to = "Value") %>%
+  # Remove rows with NA values in Value
+  filter(!is.na(Value))
+
+# Calculate percentages WITHIN each Value (category level)
+# This means for each categorical variable value, what's the distribution of Groups?
+df_summary <- df_long %>%
+  group_by(Column_Name, Value, Group) %>%
+  tally() %>%
+  group_by(Column_Name, Value) %>%  # Group by Column_Name and Value for percentages
+  mutate(
+    total = sum(n),
+    percent = n/total * 100
+  ) %>%
+  ungroup()
+
+# Plotting parameters - adjust as needed
+size <- 15  # Base text size
+
+# Create the plot: 100% stacked bars with Group as fill, x = Value
+p <- ggplot(df_summary, aes(x = Value, y = percent, fill = Group)) +
+  geom_col() +
+  geom_text(aes(label = paste0(n)),
+            position = position_stack(vjust = 0.5),
+            size = size/2, color = "black") +
+  facet_wrap(~ Column_Name, scales = "free", ncol = 7) +
+  labs(title = "Percentage Distribution by Group for Each Categorical Variable",
+       #subtitle = paste("Total N =", nrow(meta)),
+       x = "Category Values",
+       y = "Percentage",
+       fill = "Group") +
+  theme(
+    axis.text.y = element_text(size = size+15, color = "black"),
+    axis.text.x = element_text(size = size+15, color = "black", angle = 45, hjust = 1),
+    axis.title = element_text(size = size + 15, color = "black"),
+    legend.text = element_text(size = size+35),
+    legend.title = element_text(size = size + 35),
+    panel.background = element_rect(fill = "white", colour = "black"),
+    panel.grid.major = element_line(color = "gray90", size = 0.2),
+    strip.text = element_text(size = size+10, color = "black"),
+    strip.background = element_rect(fill = "gray80", color = "black"),
+    plot.title = element_text(size = size + 35, face = "bold"),
+    plot.subtitle = element_text(size = size+35)
+  ) +
+  scale_fill_manual(values = c("A" = "#2c7bb6", "B" = "#d7191c", "C" = "#1a9641")) +
+  scale_y_continuous(labels = scales::percent_format(scale = 1),
+                     expand = expansion(mult = c(0, 0.1)))
+
+# Display the plot
+print(p)
+
+# Save to PDF
+if (length(categorical_vars) > 0) {
+  pdf_width <- min(45, 9 + 7 * ceiling(length(categorical_vars)/4))
+  pdf_height <- min(70, 6 * ceiling(length(categorical_vars)/4))
+  
+  pdf("metadata_percentage_by_group_stacked_v3.pdf", width = pdf_width, height = pdf_height)
+  print(p)
+  dev.off()
+  
+  cat("\nPDF file saved: metadata_percentage_by_group_stacked.pdf\n")
+} else {
+  cat("\nNo categorical variables to plot!\n")
+}
+```
+
+
+```
+

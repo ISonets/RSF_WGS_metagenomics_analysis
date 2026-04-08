@@ -1,0 +1,329 @@
+chi-square for all variables
+
+# libs
+```{r}
+library(ggplot2)
+library(phyloseq)
+library(patchwork)   # to combine multiple plots
+library(dplyr)
+```
+
+# load data
+```{r}
+ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
+ps
+bad_batch_samples <- c("AO-203-2", "AO-207-1", "B-022-2", "MB124-2")
+
+if (length(bad_batch_samples) > 0) {
+  ps <- prune_samples(!(sample_names(ps) %in% bad_batch_samples), ps)
+  cat("Removed", length(bad_batch_samples), "samples\n")
+}
+ps@sam_data$Batch <- as.factor(ps@sam_data$Batch)
+ps = prune_taxa(taxa_sums(ps) > 10, ps)
+level <- 'Species'
+ps <- speedyseq::tax_glom(ps, taxrank = level, NArm = TRUE)
+det <- 1/100
+prev <- 10/100
+# Prepare the phyloseq object
+taxas <- core_members(ps, detection = det, prevalence = prev, include.lowest = F)
+ps <- prune_taxa(taxas, ps)
+ps_meta <- as.data.frame(sample_data(ps))
+
+# Find categorical variables (factor or character)
+categorical_vars <- names(ps_meta)[sapply(ps_meta, function(x) is.factor(x) || is.character(x))]
+
+# Remove variables we don't want to stratify by
+categorical_vars <- setdiff(categorical_vars, 
+                            c('Age', 'Group', 'Height', 'No_Patient', 'Weight', 'Timepoint', 'SampleID'))
+# After your existing phyloseq preparation code (ps, ps_meta already exist)
+
+# Make sure Group is a factor
+ps_meta$Group <- as.factor(ps_meta$Group)
+group_var <- "Group"
+# Make sure Timepoint is a factor
+ps_meta$Timepoint <- as.factor(ps_meta$Timepoint)
+timepoint_var <- "Timepoint"
+
+# Identify categorical variables (excluding Group itself and unwanted columns)
+categorical_vars <- names(ps_meta)[sapply(ps_meta, function(x) is.factor(x) || is.character(x))]
+categorical_vars <- setdiff(categorical_vars, 
+                            c('Age', 'Height', 'No_Patient', 'Weight', 'Timepoint', 'SampleID', group_var))
+
+# Remove variables with only one level (no variation)
+categorical_vars <- categorical_vars[sapply(ps_meta[, categorical_vars, drop = FALSE], 
+                                            function(x) length(unique(x)) > 1)]
+```
+
+# analysis loop and plots by Group
+```{r}
+# After preparing ps_meta as a data.frame (or tibble)
+# Ensure Group is a factor
+ps_meta$Group <- as.factor(ps_meta$Group)
+group_var <- "Group"
+
+# Categorical variables (excluding unwanted)
+categorical_vars <- names(ps_meta)[sapply(ps_meta, function(x) is.factor(x) || is.character(x))]
+categorical_vars <- setdiff(categorical_vars, 
+                            c('Age', 'Height', 'No_Patient', 'Weight', 'Timepoint', 'SampleID', group_var))
+categorical_vars <- categorical_vars[sapply(ps_meta[, categorical_vars, drop = FALSE], 
+                                            function(x) length(unique(x)) > 1)]
+
+# Results data frame
+results <- data.frame(Variable = character(),
+                      Test = character(),
+                      Statistic = numeric(),
+                      df = integer(),
+                      p_value = numeric(),
+                      stringsAsFactors = FALSE)
+
+# Loop with [[ ]] fix
+for (var in categorical_vars) {
+  x_vec <- ps_meta[[var]]
+  y_vec <- ps_meta[[group_var]]
+  tab <- table(x_vec, y_vec, useNA = "no")
+  if (any(dim(tab) < 2) || sum(tab) < 2) next
+  
+  chi_temp <- suppressWarnings(chisq.test(tab))
+  if (any(chi_temp$expected < 5)) {
+    ft <- fisher.test(tab, simulate.p.value = TRUE, B = 10000)
+    results <- rbind(results, data.frame(Variable = var,
+                                         Test = "Fisher's exact",
+                                         Statistic = NA,
+                                         df = NA,
+                                         p_value = ft$p.value))
+  } else {
+    ct <- chisq.test(tab)
+    results <- rbind(results, data.frame(Variable = var,
+                                         Test = "Chi-square",
+                                         Statistic = ct$statistic,
+                                         df = ct$parameter,
+                                         p_value = ct$p.value))
+  }
+}
+
+# Adjust p-values
+results$p_adjusted <- p.adjust(results$p_value, method = "BH")
+results <- results[order(results$p_adjusted), ]
+print(subset(results, p_adjusted < 0.05))
+
+# Plotting (also use [[ ]])
+library(ggplot2)
+library(patchwork)
+
+group_colors <- c("A" = "red", "B" = "blue", "C" = "green")
+sig_vars <- results$Variable[results$p_adjusted < 0.05]
+plot_list <- list()
+
+
+for (var in sig_vars) {
+  plot_df <- data.frame(
+    var_level = ps_meta[[var]],
+    group = ps_meta[[group_var]]
+  )
+  plot_df <- plot_df[complete.cases(plot_df), ]
+  
+  prop_data <- as.data.frame(prop.table(table(plot_df$var_level, plot_df$group), margin = 1))
+  colnames(prop_data) <- c(var, group_var, "Proportion")
+  
+  p_adj_val <- results$p_adjusted[results$Variable == var]
+  p_label <- ifelse(p_adj_val < 0.001, "p_adj < 0.001", paste("p_adj =", round(p_adj_val, 4)))
+  
+  p <- ggplot(prop_data, aes_string(x = var, y = "Proportion", fill = group_var)) +
+    geom_bar(stat = "identity", position = "stack") +
+    scale_fill_manual(values = group_colors, name = "Group") +
+    labs(title = paste("Association with Group -", var),
+         subtitle = p_label,
+         x = var, y = "Proportion") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  plot_list[[var]] <- p
+  
+}
+
+# Save as PDF (good for publication)
+ggsave("chi_square_plots_vs_group.pdf", 
+       plot = wrap_plots(plot_list, ncol = 2), 
+       width = 12, height = 8 * ceiling(length(plot_list)/2))
+
+# Or save as PNG (good for quick viewing)
+ggsave("chi_square_plots_vs_group.png", 
+       plot = wrap_plots(plot_list, ncol = 2), 
+       width = 12, height = 8 * ceiling(length(plot_list)/2), dpi = 300)
+
+if (length(plot_list) > 0) {
+  wrap_plots(plot_list, ncol = 2)
+} else {
+  cat("No significant associations found.\n")
+}
+# save resulting table
+write.csv(results, "chi_square_results_vs_group.csv", row.names = FALSE)
+sig_results <- subset(results, p_adjusted < 0.05)
+write.csv(sig_results, "chi_square_significant_results_vs_group.csv", row.names = FALSE)
+
+```
+
+# plots by Group
+```{r}
+# Create a folder (if it doesn't exist)
+plot_folder <- "chi_square_plots"
+if (!dir.exists(plot_folder)) dir.create(plot_folder)
+
+# Loop over significant variables and save both plot types
+for (var in sig_vars) {
+  # ----- Side-by-side bar plot -----
+  plot_df <- data.frame(
+    var_level = ps_meta[[var]],
+    group = ps_meta[[group_var]]
+  )
+  plot_df <- plot_df[complete.cases(plot_df), ]
+  
+  count_data <- as.data.frame(table(plot_df$var_level, plot_df$group))
+  colnames(count_data) <- c(var, group_var, "Count")
+  
+  p_bar <- ggplot(count_data, aes_string(x = var, y = "Count", fill = group_var)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    scale_fill_manual(values = group_colors) +
+    labs(title = paste(var, "vs Group"), 
+         subtitle = paste("p_adj =", round(results$p_adjusted[results$Variable == var], 4))) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  ggsave(filename = file.path(plot_folder, paste0(var, "_side_by_side.pdf")), 
+         plot = p_bar, width = 8, height = 6)
+  ggsave(filename = file.path(plot_folder, paste0(var, "_side_by_side.png")), 
+         plot = p_bar, width = 8, height = 6, dpi = 300)
+  
+  # ----- Heatmap of residuals -----
+  tab <- table(ps_meta[[var]], ps_meta[[group_var]])
+  chi <- chisq.test(tab)
+  resid_df <- as.data.frame(chi$stdres)
+  colnames(resid_df) <- c(var, group_var, "Residual")
+  
+  p_heat <- ggplot(resid_df, aes_string(x = var, y = group_var, fill = "Residual")) +
+    geom_tile() +
+    scale_fill_gradient2(low = "red", mid = "white", high = "blue", 
+                         midpoint = 0, name = "Std. Residual") +
+    labs(title = paste(var, "vs", group_var),
+         subtitle = paste("Chi-square p_adj =", round(results$p_adjusted[results$Variable == var], 4))) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  ggsave(filename = file.path(plot_folder, paste0(var, "_residual_heatmap.pdf")), 
+         plot = p_heat, width = 8, height = 6)
+  ggsave(filename = file.path(plot_folder, paste0(var, "_residual_heatmap.png")), 
+         plot = p_heat, width = 8, height = 6, dpi = 300)
+}
+
+cat("Plots saved in folder:", plot_folder)
+```
+
+# by Timepoint analysis and plots
+```{r}
+results_time <- data.frame(Variable = character(),
+                           Test = character(),
+                           Statistic = numeric(),
+                           df = integer(),
+                           p_value = numeric(),
+                           stringsAsFactors = FALSE)
+
+for (var in categorical_vars) {
+  x_vec <- ps_meta[[var]]
+  y_vec <- ps_meta[[timepoint_var]]
+  tab <- table(x_vec, y_vec, useNA = "no")
+  if (any(dim(tab) < 2) || sum(tab) < 2) next
+  
+  chi_temp <- suppressWarnings(chisq.test(tab))
+  if (any(chi_temp$expected < 5)) {
+    ft <- fisher.test(tab, simulate.p.value = TRUE, B = 10000)
+    results_time <- rbind(results_time, data.frame(Variable = var,
+                                                   Test = "Fisher's exact",
+                                                   Statistic = NA,
+                                                   df = NA,
+                                                   p_value = ft$p.value))
+  } else {
+    ct <- chisq.test(tab)
+    results_time <- rbind(results_time, data.frame(Variable = var,
+                                                   Test = "Chi-square",
+                                                   Statistic = ct$statistic,
+                                                   df = ct$parameter,
+                                                   p_value = ct$p.value))
+  }
+}
+
+# Adjust p‑values
+results_time$p_adjusted <- p.adjust(results_time$p_value, method = "BH")
+results_time <- results_time[order(results_time$p_adjusted), ]
+
+# Show significant associations
+sig_time <- subset(results_time, p_adjusted < 0.05)
+print(sig_time)
+library(ggplot2)
+
+# Create folder
+plot_folder_time <- "chi_square_plots_timepoint"
+if (!dir.exists(plot_folder_time)) dir.create(plot_folder_time)
+
+# Define two colors for Timepoint (e.g., orange and purple)
+time_colors <- c("-1" = "orange", "-2" = "purple")   # adjust level names if needed
+
+# Get significant variables (or use all if you prefer)
+sig_vars_time <- results_time$Variable[results_time$p_adjusted < 0.05]
+
+if (length(sig_vars_time) > 0) {
+  for (var in sig_vars_time) {
+    # ----- Side‑by‑side bar plot -----
+    plot_df <- data.frame(
+      var_level = ps_meta[[var]],
+      timepoint = ps_meta[[timepoint_var]]
+    )
+    plot_df <- plot_df[complete.cases(plot_df), ]
+    
+    count_data <- as.data.frame(table(plot_df$var_level, plot_df$timepoint))
+    colnames(count_data) <- c(var, timepoint_var, "Count")
+    
+    p_bar <- ggplot(count_data, aes_string(x = var, y = "Count", fill = timepoint_var)) +
+      geom_bar(stat = "identity", position = "dodge") +
+      scale_fill_manual(values = time_colors) +
+      labs(title = paste(var, "vs Timepoint"),
+           subtitle = paste("p_adj =", round(results_time$p_adjusted[results_time$Variable == var], 4))) +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    ggsave(filename = file.path(plot_folder_time, paste0(var, "_side_by_side.pdf")),
+           plot = p_bar, width = 8, height = 6)
+    ggsave(filename = file.path(plot_folder_time, paste0(var, "_side_by_side.png")),
+           plot = p_bar, width = 8, height = 6, dpi = 300)
+    
+    # ----- Heatmap of residuals -----
+    tab <- table(ps_meta[[var]], ps_meta[[timepoint_var]])
+    # Avoid chi-square on empty or degenerate tables
+    if (all(dim(tab) >= 2) && sum(tab) > 0) {
+      chi <- chisq.test(tab)
+      resid_df <- as.data.frame(chi$stdres)
+      colnames(resid_df) <- c(var, timepoint_var, "Residual")
+      
+      p_heat <- ggplot(resid_df, aes_string(x = var, y = timepoint_var, fill = "Residual")) +
+        geom_tile() +
+        scale_fill_gradient2(low = "red", mid = "white", high = "blue",
+                             midpoint = 0, name = "Std. Residual") +
+        labs(title = paste(var, "vs", timepoint_var),
+             subtitle = paste("p_adj =", round(results_time$p_adjusted[results_time$Variable == var], 4))) +
+        theme_minimal() +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+      
+      ggsave(filename = file.path(plot_folder_time, paste0(var, "_residual_heatmap.pdf")),
+             plot = p_heat, width = 8, height = 6)
+      ggsave(filename = file.path(plot_folder_time, paste0(var, "_residual_heatmap.png")),
+             plot = p_heat, width = 8, height = 6, dpi = 300)
+    }
+  }
+  cat("Plots saved in folder:", plot_folder_time, "\n")
+} else {
+  cat("No significant associations with Timepoint after multiple testing correction.\n")
+}
+
+# Save the full results table
+write.csv(results_time, "chi_square_results_timepoint.csv", row.names = FALSE)
+```
+
