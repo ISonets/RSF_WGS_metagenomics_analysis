@@ -1,1597 +1,277 @@
-1st original version
-#libs
-```{r}
+```# ====================================================================
+# PAIRED SHANNON PLOT – CUSTOM STRATA (AB, PPI, OTH, NO)
+# ====================================================================
+
 library(phyloseq)
-library(ggplot2)
-library(microbiome)
-library(ggpubr)
-library(grid)
-library(PNWColors)
-library(gridExtra)
-```
-# read phyloseq and define parameters
-```{r}
-#ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
-ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_ps_mags.rds')
-meta <- ps@sam_data
-# make Batch as factor
-meta$Batch <- as.factor(meta$Batch)
-ps_obj <- ps
-level <- 'Species'
-det <- 1/100
-prev <- 10/100
-measure <- 'Shannon'
-method <- 'wilcox.test'
-
-# Prepare the phyloseq object
-taxas <- core_members(ps_obj, detection = det, prevalence = prev, include.lowest = F)
-ps_obj <- prune_taxa(taxas, ps_obj)
-ps_obj <- speedyseq::tax_glom(ps_obj, taxrank = level, NArm = TRUE)
-
-# Define the columns to keep for comparisons
-categorical_vars <- names(meta)[sapply(meta, function(x) is.factor(x) || is.character(x))]
-categorical_vars <- setdiff(categorical_vars, c('Age', "Group",'BMI', 'Height', 'No_Patient', 
-                                                'Weight', "SampleID"))
-# convert all vars to factors
-for (col in categorical_vars) {
-  if (col %in% colnames(meta) && (is.character(meta[[col]]) || is.integer(meta[[col]]))) {
-    ps_obj@sam_data[[col]] <- as.factor(ps_obj@sam_data[[col]])
-  }
-}
-
-# Get unique groups and timepoints
-groups <- as.factor(sort(unique(ps_obj@sam_data$Group)))  # Sort to ensure consistent order
-timepoints <- as.factor(sort(unique(ps_obj@sam_data$Timepoint)))
-
-# Create output directory
-output_dir <- "/home/sonec_iv/alpha_diversity_by_variable_MAGs"
-dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
-
-# Define color palettes as requested
-# Group A: Red colors (light for -1, original for -2)
-groupA_colors <- c("-1" = "#FF9999",  # Light red for Timepoint -1
-                   "-2" = "#FF3333")  # Original red for Timepoint -2
-
-# Group B: Blue colors (light for -1, original for -2)
-groupB_colors <- c("-1" = "#99CCFF",  # Light blue for Timepoint -1
-                   "-2" = "#3366FF")  # Original blue for Timepoint -2
-
-# Group C: Green colors (light for -1, original for -2)
-groupC_colors <- c("-1" = "#99FF99",  # Light green for Timepoint -1
-                   "-2" = "#33CC33")  # Original green for Timepoint -2
-
-# For group comparisons (plots 1 & 2): Use light colors for -1, original for -2
-group_palette_time1 <- c("A" = "#FF9999", "B" = "#99CCFF", "C" = "#99FF99")  # Light colors for Timepoint -1
-group_palette_time2 <- c("A" = "#FF3333", "B" = "#3366FF", "C" = "#33CC33")  # Original colors for Timepoint -2
-
-# For timepoint comparisons (plots 3-5)
-timepoint_palettes <- list(
-  "A" = groupA_colors,
-  "B" = groupB_colors,
-  "C" = groupC_colors
-)
-```
-
-
-
-# orig function to plot alpha diversity with custom comparisons
-```{r}
-plot_alpha_div_custom <- function(
-    ps_obj,
-    group_var,
-    color_var = NULL,
-    measure = 'Shannon',
-    comparisons = NULL,
-    palette = NULL,
-    title = ""
-) {
-  if (is.null(color_var)) {
-    color_var <- group_var
-  }
-  
-  # Generate boxplot of alpha diversity
-  p <- plot_richness(ps_obj, x = group_var, color = color_var, measures = measure)
-  
-  # Add comparisons if provided
-  if (!is.null(comparisons)) {
-    p <- p + stat_compare_means(comparisons = comparisons, 
-                                 method = "wilcox.test", 
-                                 label = "p.signif", 
-                                 size = 5,
-                                 step.increase = 0.1,
-                                 tip.length = 0.02)
-  }
-  
-  # Add palette if provided
-  if (!is.null(palette)) {
-    p <- p + scale_color_manual(values = palette)
-  }
-  
-  # Add title
-  if (title != "") {
-    p <- p + ggtitle(title)
-  }
-  
-  return(p)
-}
-```
-
-# debug function
-```{r}
-# Modified version of your original function with debug prints
-plot_alpha_div_custom <- function(
-    ps_obj,
-    group_var,
-    color_var = NULL,
-    measure = 'Shannon',
-    comparisons = NULL,
-    palette = NULL,
-    title = ""
-) {
-  if (is.null(color_var)) {
-    color_var <- group_var
-  }
-  
-  cat("\n=== DEBUG INFO ===\n")
-  cat("Group variable:", group_var, "\n")
-  cat("Color variable:", color_var, "\n")
-  cat("Measure:", measure, "\n")
-  
-  # Generate boxplot of alpha diversity
-  p <- plot_richness(ps_obj, x = group_var, color = color_var, measures = measure)
-  
-  # Print the structure of the plot
-  cat("\nPlot structure after plot_richness:\n")
-  print(str(p$data, max.level = 2))
-  
-  cat("\nAesthetics mapping:\n")
-  print(p$mapping)
-  
-  cat("\nLayers in plot:\n")
-  print(length(p$layers))
-  
-  # Add comparisons if provided
-  if (!is.null(comparisons)) {
-    cat("\nAdding comparisons:", paste(sapply(comparisons, paste, collapse=" vs "), collapse="; "), "\n")
-    p <- p + stat_compare_means(comparisons = comparisons, 
-                                 method = "wilcox.test", 
-                                 label = "p.signif", 
-                                 size = 5,
-                                 step.increase = 0.1,
-                                 tip.length = 0.02)
-  }
-  
-  # Check plot data after adding stat_compare_means
-  cat("\nPlot data structure after adding stat_compare_means:\n")
-  print(str(p$data, max.level = 2))
-  
-  # Add palette if provided
-  if (!is.null(palette)) {
-    p <- p + scale_color_manual(values = palette)
-  }
-  
-  # Add title
-  if (title != "") {
-    p <- p + ggtitle(title)
-  }
-  
-  return(p)
-}
-```
-
-#check meta
-```{r}
-check_factors <- function() {
-  meta <- as.data.frame(sample_data(ps_obj))
-  
-  cat("\n=== CHECKING FACTOR LEVELS ===\n")
-  
-  # Check Group
-  cat("\nGroup variable:\n")
-  cat("Class:", class(meta$Group), "\n")
-  cat("Levels:", if(is.factor(meta$Group)) paste(levels(meta$Group), collapse=", ") else "Not a factor", "\n")
-  cat("Unique values:", paste(unique(meta$Group), collapse=", "), "\n")
-  
-  # Check Timepoint
-  cat("\nTimepoint variable:\n")
-  cat("Class:", class(meta$Timepoint), "\n")
-  
-  # Check a sample categorical variable
-  sample_var <- categorical_vars[1]
-  if(length(categorical_vars) > 0) {
-    cat("\nSample categorical variable (", sample_var, "):\n", sep="")
-    cat("Class:", class(meta[[sample_var]]), "\n")
-  }
-  
-  # Check for NAs in Group
-  cat("\nNA values in Group:", sum(is.na(meta$Group)), "\n")
-}
-
-check_factors()
-```
-
-# upd version (WORKS)
-```{r}
-# Function to plot alpha diversity with custom comparisons - WORKING VERSION
-plot_alpha_div_custom <- function(
-    ps_obj,
-    group_var,
-    color_var = NULL,
-    measure = 'Shannon',
-    comparisons = NULL,
-    palette = NULL,
-    title = ""
-) {
-  if (is.null(color_var)) {
-    color_var <- group_var
-  }
-  
-  # Calculate alpha diversity manually
-  alpha_df <- microbiome::alpha(ps_obj, index = measure)
-  colnames(alpha_df) <- measure
-  
-  # Get sample data
-  meta_df <- as.data.frame(sample_data(ps_obj))
-  
-  # Convert grouping variables to factors if they're not already
-  if (!is.factor(meta_df[[group_var]])) {
-    meta_df[[group_var]] <- factor(meta_df[[group_var]])
-  }
-  if (!is.factor(meta_df[[color_var]])) {
-    meta_df[[color_var]] <- factor(meta_df[[color_var]])
-  }
-  
-  # Combine alpha diversity with metadata
-  plot_df <- cbind(alpha_df, meta_df)
-  
-  # Create the base plot
-  p <- ggplot(plot_df, aes_string(x = group_var, y = measure, color = color_var)) +
-    geom_boxplot(outlier.shape = NA, width = 0.3) +
-    geom_jitter(width = 0.2, alpha = 0.6, size = 1.5) +
-    theme_bw(base_size = 12) +
-    labs(title = title,
-         x = group_var,
-         y = paste(measure, "Diversity"))
-  
-  # Add comparisons if provided - REVERTED TO STANDARD STARS
-  if (!is.null(comparisons)) {
-    # Ensure comparisons are in the right format (as characters, not integers)
-    comparisons <- lapply(comparisons, function(x) {
-      as.character(x)
-    })
-    
-    # Add standard significance stars (no p-values)
-    p <- p + ggpubr::stat_compare_means(
-      comparisons = comparisons, 
-      method = "wilcox.test", 
-      label = "p.signif",  # Just stars
-      size = 5,
-      step.increase = 0.1,
-      tip.length = 0.02
-    )
-  }
-  
-  # Add palette if provided
-  if (!is.null(palette)) {
-    p <- p + scale_color_manual(values = palette)
-  }
-  
-  return(list(plot = p, data = plot_df))
-}
-
-# Function to perform statistical tests and save results (KEEP THIS - it's working!)
-save_statistics <- function(
-    ps_obj,
-    group_var,
-    measure = 'Shannon',
-    comparisons = NULL,
-    filename
-) {
-  # Calculate alpha diversity
-  alpha_df <- microbiome::alpha(ps_obj, index = measure)
-  colnames(alpha_df) <- measure
-  
-  # Get sample data
-  meta_df <- as.data.frame(sample_data(ps_obj))
-  
-  # Convert grouping variable to factor if needed
-  if (!is.factor(meta_df[[group_var]])) {
-    meta_df[[group_var]] <- factor(meta_df[[group_var]])
-  }
-  
-  # Combine alpha diversity with metadata
-  plot_df <- cbind(alpha_df, meta_df)
-  
-  # Save alpha diversity data
-  alpha_data_file <- paste0(tools::file_path_sans_ext(filename), "_alpha_data.csv")
-  write.csv(plot_df, alpha_data_file, row.names = TRUE)
-  cat("  Saved alpha diversity data:", alpha_data_file, "\n")
-  
-  # Perform statistical tests if comparisons are provided
-  if (!is.null(comparisons) && length(comparisons) > 0) {
-    stats_results <- data.frame()
-    
-    for (i in seq_along(comparisons)) {
-      comp <- comparisons[[i]]
-      group1 <- comp[1]
-      group2 <- comp[2]
-      
-      # Extract data for the two groups
-      data1 <- plot_df[plot_df[[group_var]] == group1, measure]
-      data2 <- plot_df[plot_df[[group_var]] == group2, measure]
-      
-      # Perform Wilcoxon test
-      if (length(data1) > 0 && length(data2) > 0) {
-        test_result <- wilcox.test(data1, data2, exact = FALSE)
-        
-        stats_row <- data.frame(
-          Comparison = paste(group1, "vs", group2),
-          Group1 = group1,
-          Group2 = group2,
-          N_Group1 = length(data1),
-          N_Group2 = length(data2),
-          Mean_Group1 = mean(data1, na.rm = TRUE),
-          Mean_Group2 = mean(data2, na.rm = TRUE),
-          SD_Group1 = sd(data1, na.rm = TRUE),
-          SD_Group2 = sd(data2, na.rm = TRUE),
-          W_statistic = test_result$statistic,
-          P_value = test_result$p.value,
-          P_value_rounded = round(test_result$p.value, 4),
-          Significance = ifelse(test_result$p.value < 0.001, "***",
-                                ifelse(test_result$p.value < 0.01, "**",
-                                       ifelse(test_result$p.value < 0.05, "*", "ns")))
-        )
-        
-        stats_results <- rbind(stats_results, stats_row)
-      }
-    }
-    
-    # Save statistics results
-    if (nrow(stats_results) > 0) {
-      stats_file <- paste0(tools::file_path_sans_ext(filename), "_stats.csv")
-      write.csv(stats_results, stats_file, row.names = FALSE)
-      cat("  Saved statistics results:", stats_file, "\n")
-    }
-  }
-  
-  return(plot_df)
-}
-
-# Function to perform statistical tests and save results
-save_statistics <- function(
-    ps_obj,
-    group_var,
-    measure = 'Shannon',
-    comparisons = NULL,
-    filename
-) {
-  # Calculate alpha diversity - with error handling
-  alpha_df <- tryCatch({
-    df <- microbiome::alpha(ps_obj, index = measure)
-    colnames(df) <- measure
-    df
-  }, error = function(e) {
-    cat("  WARNING: microbiome::alpha() failed, using estimate_richness()\n")
-    alpha_est <- estimate_richness(ps_obj, measures = measure)
-    df <- data.frame(alpha_est)
-    colnames(df) <- measure
-    df
-  })
-  
-  # Get sample data
-  meta_df <- as.data.frame(sample_data(ps_obj))
-  
-  # Convert grouping variable to factor if needed
-  if (!is.factor(meta_df[[group_var]])) {
-    meta_df[[group_var]] <- factor(meta_df[[group_var]])
-  }
-  
-  # Combine alpha diversity with metadata
-  plot_df <- cbind(alpha_df, meta_df)
-  
-  # Save alpha diversity data
-  alpha_data_file <- paste0(tools::file_path_sans_ext(filename), "_alpha_data.csv")
-  write.csv(plot_df, alpha_data_file, row.names = TRUE)
-  cat("  Saved alpha diversity data:", alpha_data_file, "\n")
-  
-  # Perform statistical tests if comparisons are provided
-  if (!is.null(comparisons) && length(comparisons) > 0) {
-    stats_results <- data.frame()
-    
-    for (i in seq_along(comparisons)) {
-      comp <- comparisons[[i]]
-      group1 <- as.character(comp[1])
-      group2 <- as.character(comp[2])
-      
-      # Check if groups exist in data
-      if (!group1 %in% plot_df[[group_var]] || !group2 %in% plot_df[[group_var]]) {
-        cat("  WARNING: Skipping comparison", group1, "vs", group2, "- groups not in data\n")
-        next
-      }
-      
-      # Extract data for the two groups
-      data1 <- plot_df[plot_df[[group_var]] == group1, measure]
-      data2 <- plot_df[plot_df[[group_var]] == group2, measure]
-      
-      # Perform Wilcoxon test
-      if (length(data1) > 1 && length(data2) > 1) {
-        test_result <- tryCatch({
-          wilcox.test(data1, data2, exact = FALSE)
-        }, error = function(e) {
-          cat("  ERROR in wilcox.test for", group1, "vs", group2, ":", e$message, "\n")
-          NULL
-        })
-        
-        if (!is.null(test_result)) {
-          stats_row <- data.frame(
-            Comparison = paste(group1, "vs", group2),
-            Group1 = group1,
-            Group2 = group2,
-            N_Group1 = length(data1),
-            N_Group2 = length(data2),
-            Mean_Group1 = mean(data1, na.rm = TRUE),
-            Mean_Group2 = mean(data2, na.rm = TRUE),
-            SD_Group1 = sd(data1, na.rm = TRUE),
-            SD_Group2 = sd(data2, na.rm = TRUE),
-            W_statistic = test_result$statistic,
-            P_value = test_result$p.value,
-            P_value_rounded = round(test_result$p.value, 4),
-            Significance = ifelse(test_result$p.value < 0.001, "***",
-                                  ifelse(test_result$p.value < 0.01, "**",
-                                         ifelse(test_result$p.value < 0.05, "*", "ns")))
-          )
-          
-          stats_results <- rbind(stats_results, stats_row)
-        }
-      } else {
-        cat("  WARNING: Not enough data for comparison", group1, "vs", group2, "\n")
-      }
-    }
-    
-    # Save statistics results
-    if (nrow(stats_results) > 0) {
-      stats_file <- paste0(tools::file_path_sans_ext(filename), "_stats.csv")
-      write.csv(stats_results, stats_file, row.names = FALSE)
-      cat("  Saved statistics results:", stats_file, "\n")
-    } else {
-      cat("  WARNING: No statistical results to save\n")
-    }
-  }
-  
-  return(plot_df)
-}
-
-# In your main loop, add this at the beginning to handle Timepoint properly:
-# Convert Timepoint to character first, then factor (since it's integer)
-ps_obj@sam_data$Timepoint <- factor(as.character(ps_obj@sam_data$Timepoint))
-
-# Also ensure Group is factor
-ps_obj@sam_data$Group <- factor(ps_obj@sam_data$Group)
-
-# And when creating time_comparisons, use characters:
-time_comparisons <- list(c("-1", "-2"))
-
-
-# Function to perform statistical tests and save results
-save_statistics <- function(
-    ps_obj,
-    group_var,
-    measure = 'Shannon',
-    comparisons = NULL,
-    filename
-) {
-  # Calculate alpha diversity
-  alpha_df <- microbiome::alpha(ps_obj, index = measure)
-  colnames(alpha_df) <- measure
-  
-  # Get sample data
-  meta_df <- as.data.frame(sample_data(ps_obj))
-  
-  # Convert grouping variable to factor if needed
-  if (!is.factor(meta_df[[group_var]])) {
-    meta_df[[group_var]] <- factor(meta_df[[group_var]])
-  }
-  
-  # Combine alpha diversity with metadata
-  plot_df <- cbind(alpha_df, meta_df)
-  
-  # Save alpha diversity data
-  alpha_data_file <- paste0(tools::file_path_sans_ext(filename), "_alpha_data.csv")
-  write.csv(plot_df, alpha_data_file, row.names = TRUE)
-  cat("  Saved alpha diversity data:", alpha_data_file, "\n")
-  
-  # Perform statistical tests if comparisons are provided
-  if (!is.null(comparisons) && length(comparisons) > 0) {
-    stats_results <- data.frame()
-    
-    for (i in seq_along(comparisons)) {
-      comp <- comparisons[[i]]
-      group1 <- comp[1]
-      group2 <- comp[2]
-      
-      # Extract data for the two groups
-      data1 <- plot_df[plot_df[[group_var]] == group1, measure]
-      data2 <- plot_df[plot_df[[group_var]] == group2, measure]
-      
-      # Perform Wilcoxon test
-      if (length(data1) > 0 && length(data2) > 0) {
-        test_result <- wilcox.test(data1, data2, exact = FALSE)
-        
-        stats_row <- data.frame(
-          Comparison = paste(group1, "vs", group2),
-          Group1 = group1,
-          Group2 = group2,
-          N_Group1 = length(data1),
-          N_Group2 = length(data2),
-          Mean_Group1 = mean(data1, na.rm = TRUE),
-          Mean_Group2 = mean(data2, na.rm = TRUE),
-          SD_Group1 = sd(data1, na.rm = TRUE),
-          SD_Group2 = sd(data2, na.rm = TRUE),
-          W_statistic = test_result$statistic,
-          P_value = test_result$p.value,
-          P_value_rounded = round(test_result$p.value, 4),
-          Significance = ifelse(test_result$p.value < 0.001, "***",
-                                ifelse(test_result$p.value < 0.01, "**",
-                                       ifelse(test_result$p.value < 0.05, "*", "ns")))
-        )
-        
-        stats_results <- rbind(stats_results, stats_row)
-      }
-    }
-    
-    # Save statistics results
-    if (nrow(stats_results) > 0) {
-      stats_file <- paste0(tools::file_path_sans_ext(filename), "_stats.csv")
-      write.csv(stats_results, stats_file, row.names = FALSE)
-      cat("  Saved statistics results:", stats_file, "\n")
-    }
-  }
-  
-  return(plot_df)
-}
-
-ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_ps_mags.rds')
-meta <- ps@sam_data
-meta$Batch <- as.factor(meta$Batch)
-ps_obj <- ps
-level <- 'Species'
-det <- 1/100
-prev <- 10/100
-measure <- 'Shannon'
-method <- 'wilcox.test'
-
-# Prepare the phyloseq object
-taxas <- core_members(ps_obj, detection = det, prevalence = prev, include.lowest = F)
-ps_obj <- prune_taxa(taxas, ps_obj)
-ps_obj <- speedyseq::tax_glom(ps_obj, taxrank = level, NArm = TRUE)
-
-# Define the columns to keep for comparisons
-categorical_vars <- names(meta)[sapply(meta, function(x) is.factor(x) || is.character(x))]
-categorical_vars <- setdiff(categorical_vars, c('Age', "Group",'BMI', 'Height', 'No_Patient', 
-                                                'Weight', "SampleID"))
-# convert all vars to factors
-for (col in categorical_vars) {
-  if (col %in% colnames(meta) && (is.character(meta[[col]]) || is.integer(meta[[col]]))) {
-    ps_obj@sam_data[[col]] <- as.factor(ps_obj@sam_data[[col]])
-  }
-}
-
-# Get unique groups and timepoints
-groups <- as.factor(sort(unique(ps_obj@sam_data$Group)))  # Sort to ensure consistent order
-timepoints <- as.factor(sort(unique(ps_obj@sam_data$Timepoint)))
-
-# Create output directory
-output_dir <- "/home/sonec_iv/alpha_diversity_by_variable_MAGs"
-dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
-
-# Define color palettes as requested
-# Group A: Red colors (light for -1, original for -2)
-groupA_colors <- c("-1" = "#FF9999",  # Light red for Timepoint -1
-                   "-2" = "#FF3333")  # Original red for Timepoint -2
-
-# Group B: Blue colors (light for -1, original for -2)
-groupB_colors <- c("-1" = "#99CCFF",  # Light blue for Timepoint -1
-                   "-2" = "#3366FF")  # Original blue for Timepoint -2
-
-# Group C: Green colors (light for -1, original for -2)
-groupC_colors <- c("-1" = "#99FF99",  # Light green for Timepoint -1
-                   "-2" = "#33CC33")  # Original green for Timepoint -2
-
-# For group comparisons (plots 1 & 2): Use light colors for -1, original for -2
-group_palette_time1 <- c("A" = "#FF9999", "B" = "#99CCFF", "C" = "#99FF99")  # Light colors for Timepoint -1
-group_palette_time2 <- c("A" = "#FF3333", "B" = "#3366FF", "C" = "#33CC33")  # Original colors for Timepoint -2
-
-# For timepoint comparisons (plots 3-5)
-timepoint_palettes <- list(
-  "A" = groupA_colors,
-  "B" = groupB_colors,
-  "C" = groupC_colors
-)
-
-
-# Loop through each categorical variable
-for (col in categorical_vars) {
-  cat("\nProcessing variable:", col, "\n")
-  
-  # Create a subdirectory for this variable
-  var_dir <- file.path(output_dir, col)
-  dir.create(var_dir, showWarnings = FALSE)
-  
-  # Skip if not enough unique values
-  if (length(unique(ps_obj@sam_data[[col]])) < 2) {
-    cat("  Skipping - less than 2 unique values\n")
-    next
-  }
-  
-  # Store plots for this variable
-  var_plots <- list()
-  
-  # PLOT 1: Groups A vs B vs C in Timepoint -1 (with light colors)
-  cat("  Creating Plot 1: Groups in Timepoint -1\n")
-  ps_time1 <- subset_samples(ps_obj, Timepoint == "-1")
-  
-  if (nsamples(ps_time1) >= 2 && length(unique(ps_time1@sam_data$Group)) >= 2) {
-    # Create comparisons between groups
-    group_comparisons <- lapply(combn(groups, 2, simplify = FALSE), as.vector)
-    
-    # Save statistics data first
-    stats_data <- save_statistics(
-      ps_time1,
-      group_var = "Group",
-      measure = measure,
-      comparisons = group_comparisons,
-      filename = file.path(var_dir, paste0(col, "_1_groups_in_timepoint-1.png"))
-    )
-    
-    # Create plot using the updated function
-    plot_result <- plot_alpha_div_custom(
-      ps_time1,
-      group_var = "Group",
-      color_var = "Group",
-      measure = measure,
-      comparisons = group_comparisons,
-      palette = group_palette_time1,
-      title = paste("Variable:", col, "\nGroups comparison in Timepoint -1")
-    )
-    
-    p1 <- plot_result$plot +
-      geom_violin(trim = FALSE, alpha = 0.2, aes(fill = Group)) +
-      geom_boxplot(width = 0.3, alpha = 0.8, outlier.shape = NA) +
-      geom_jitter(size = 1.5, alpha = 0.6, width = 0.2, height = 0) +
-      scale_fill_manual(values = group_palette_time1) +
-      theme_bw(base_size = 14) +
-      theme(
-        plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
-        axis.title = element_text(size = 12),
-        axis.text = element_text(size = 11),
-        legend.position = "none",
-        plot.margin = margin(t = 15, r = 10, b = 10, l = 10)  # Extra top margin for p-values
-      ) +
-      ylab(paste(measure, "Diversity"))
-    
-    var_plots[[1]] <- p1
-    
-    # Save plot
-    ggsave(
-      filename = file.path(var_dir, paste0(col, "_1_groups_in_timepoint-1.png")),
-      plot = p1,
-      width = 8,
-      height = 6,
-      dpi = 300
-    )
-  }
-  
-  # PLOT 2: Groups A vs B vs C in Timepoint -2 (with original colors)
-  cat("  Creating Plot 2: Groups in Timepoint -2\n")
-  ps_time2 <- subset_samples(ps_obj, Timepoint == "-2")
-  
-  if (nsamples(ps_time2) >= 2 && length(unique(ps_time2@sam_data$Group)) >= 2) {
-    # Save statistics data
-    stats_data <- save_statistics(
-      ps_time2,
-      group_var = "Group",
-      measure = measure,
-      comparisons = group_comparisons,
-      filename = file.path(var_dir, paste0(col, "_2_groups_in_timepoint-2.png"))
-    )
-    
-    plot_result <- plot_alpha_div_custom(
-      ps_time2,
-      group_var = "Group",
-      color_var = "Group",
-      measure = measure,
-      comparisons = group_comparisons,
-      palette = group_palette_time2,
-      title = paste("Variable:", col, "\nGroups comparison in Timepoint -2")
-    )
-    
-    p2 <- plot_result$plot +
-      geom_violin(trim = FALSE, alpha = 0.2, aes(fill = Group)) +
-      geom_boxplot(width = 0.3, alpha = 0.8, outlier.shape = NA) +
-      geom_jitter(size = 1.5, alpha = 0.6, width = 0.2, height = 0) +
-      scale_fill_manual(values = group_palette_time2) +
-      theme_bw(base_size = 14) +
-      theme(
-        plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
-        axis.title = element_text(size = 12),
-        axis.text = element_text(size = 11),
-        legend.position = "none",
-        plot.margin = margin(t = 15, r = 10, b = 10, l = 10)
-      ) +
-      ylab(paste(measure, "Diversity"))
-    
-    var_plots[[2]] <- p2
-    
-    # Save plot
-    ggsave(
-      filename = file.path(var_dir, paste0(col, "_2_groups_in_timepoint-2.png")),
-      plot = p2,
-      width = 8,
-      height = 6,
-      dpi = 300
-    )
-  }
-  
-  # PLOT 3: Group A - Timepoint -1 (light red) vs -2 (red)
-  cat("  Creating Plot 3: Group A timepoints\n")
-  ps_groupA <- subset_samples(ps_obj, Group == "A")
-  
-  if (nsamples(ps_groupA) >= 2 && length(unique(ps_groupA@sam_data$Timepoint)) >= 2) {
-    time_comparisons <- list(c("-1", "-2"))
-    
-    # Save statistics data
-    stats_data <- save_statistics(
-      ps_groupA,
-      group_var = "Timepoint",
-      measure = measure,
-      comparisons = time_comparisons,
-      filename = file.path(var_dir, paste0(col, "_3_groupA_timepoints.png"))
-    )
-    
-    plot_result <- plot_alpha_div_custom(
-      ps_groupA,
-      group_var = "Timepoint",
-      color_var = "Timepoint",
-      measure = measure,
-      comparisons = time_comparisons,
-      palette = timepoint_palettes[["A"]],
-      title = paste("Variable:", col, "\nGroup A: Timepoint -1 vs -2")
-    )
-    
-    p3 <- plot_result$plot +
-      geom_violin(trim = FALSE, alpha = 0.2, aes(fill = Timepoint)) +
-      geom_boxplot(width = 0.3, alpha = 0.8, outlier.shape = NA) +
-      geom_jitter(size = 1.5, alpha = 0.6, width = 0.2, height = 0) +
-      scale_fill_manual(values = timepoint_palettes[["A"]]) +
-      theme_bw(base_size = 14) +
-      theme(
-        plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
-        axis.title = element_text(size = 12),
-        axis.text = element_text(size = 11),
-        legend.position = "none",
-        plot.margin = margin(t = 15, r = 10, b = 10, l = 10)
-      ) +
-      ylab(paste(measure, "Diversity"))
-    
-    var_plots[[3]] <- p3
-    
-    # Save plot
-    ggsave(
-      filename = file.path(var_dir, paste0(col, "_3_groupA_timepoints.png")),
-      plot = p3,
-      width = 8,
-      height = 6,
-      dpi = 300
-    )
-  }
-  
-  # PLOT 4: Group B - Timepoint -1 (light blue) vs -2 (blue)
-  cat("  Creating Plot 4: Group B timepoints\n")
-  ps_groupB <- subset_samples(ps_obj, Group == "B")
-  
-  if (nsamples(ps_groupB) >= 2 && length(unique(ps_groupB@sam_data$Timepoint)) >= 2) {
-    # Save statistics data
-    stats_data <- save_statistics(
-      ps_groupB,
-      group_var = "Timepoint",
-      measure = measure,
-      comparisons = time_comparisons,
-      filename = file.path(var_dir, paste0(col, "_4_groupB_timepoints.png"))
-    )
-    
-    plot_result <- plot_alpha_div_custom(
-      ps_groupB,
-      group_var = "Timepoint",
-      color_var = "Timepoint",
-      measure = measure,
-      comparisons = time_comparisons,
-      palette = timepoint_palettes[["B"]],
-      title = paste("Variable:", col, "\nGroup B: Timepoint -1 vs -2")
-    )
-    
-    p4 <- plot_result$plot +
-      geom_violin(trim = FALSE, alpha = 0.2, aes(fill = Timepoint)) +
-      geom_boxplot(width = 0.3, alpha = 0.8, outlier.shape = NA) +
-      geom_jitter(size = 1.5, alpha = 0.6, width = 0.2, height = 0) +
-      scale_fill_manual(values = timepoint_palettes[["B"]]) +
-      theme_bw(base_size = 14) +
-      theme(
-        plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
-        axis.title = element_text(size = 12),
-        axis.text = element_text(size = 11),
-        legend.position = "none",
-        plot.margin = margin(t = 15, r = 10, b = 10, l = 10)
-      ) +
-      ylab(paste(measure, "Diversity"))
-    
-    var_plots[[4]] <- p4
-    
-    # Save plot
-    ggsave(
-      filename = file.path(var_dir, paste0(col, "_4_groupB_timepoints.png")),
-      plot = p4,
-      width = 8,
-      height = 6,
-      dpi = 300
-    )
-  }
-  
-  # PLOT 5: Group C - Timepoint -1 (light green) vs -2 (green)
-  cat("  Creating Plot 5: Group C timepoints\n")
-  ps_groupC <- subset_samples(ps_obj, Group == "C")
-  
-  if (nsamples(ps_groupC) >= 2 && length(unique(ps_groupC@sam_data$Timepoint)) >= 2) {
-    # Save statistics data
-    stats_data <- save_statistics(
-      ps_groupC,
-      group_var = "Timepoint",
-      measure = measure,
-      comparisons = time_comparisons,
-      filename = file.path(var_dir, paste0(col, "_5_groupC_timepoints.png"))
-    )
-    
-    plot_result <- plot_alpha_div_custom(
-      ps_groupC,
-      group_var = "Timepoint",
-      color_var = "Timepoint",
-      measure = measure,
-      comparisons = time_comparisons,
-      palette = timepoint_palettes[["C"]],
-      title = paste("Variable:", col, "\nGroup C: Timepoint -1 vs -2")
-    )
-    
-    p5 <- plot_result$plot +
-      geom_violin(trim = FALSE, alpha = 0.2, aes(fill = Timepoint)) +
-      geom_boxplot(width = 0.3, alpha = 0.8, outlier.shape = NA) +
-      geom_jitter(size = 1.5, alpha = 0.6, width = 0.2, height = 0) +
-      scale_fill_manual(values = timepoint_palettes[["C"]]) +
-      theme_bw(base_size = 14) +
-      theme(
-        plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
-        axis.title = element_text(size = 12),
-        axis.text = element_text(size = 11),
-        legend.position = "none",
-        plot.margin = margin(t = 15, r = 10, b = 10, l = 10)
-      ) +
-      ylab(paste(measure, "Diversity"))
-    
-    var_plots[[5]] <- p5
-    
-    # Save plot
-    ggsave(
-      filename = file.path(var_dir, paste0(col, "_5_groupC_timepoints.png")),
-      plot = p5,
-      width = 8,
-      height = 6,
-      dpi = 300
-    )
-  }
-  
-  # PLOT 6: Alpha diversity by the categorical variable itself
-  cat("  Creating Plot 6: Variable distribution\n")
-  
-  # Check if this variable has enough unique values to plot
-  unique_vals <- unique(ps_obj@sam_data[[col]])
-  if (length(unique_vals) >= 2) {
-    # Create comparisons for the variable itself
-    var_comparisons <- lapply(combn(unique_vals, 2, simplify = FALSE), as.vector)
-    
-    # Create a palette for this variable's levels
-    n_colors <- length(unique_vals)
-    if (n_colors <= 8) {
-      var_palette <- pnw_palette("Sunset2", n_colors, type = "continuous")
-    } else {
-      var_palette <- pnw_palette("Sunset2", 8, type = "continuous")
-      var_palette <- colorRampPalette(var_palette)(n_colors)
-    }
-    names(var_palette) <- unique_vals
-    
-    # Save statistics data
-    stats_data <- save_statistics(
-      ps_obj,
-      group_var = col,
-      measure = measure,
-      comparisons = var_comparisons,
-      filename = file.path(var_dir, paste0(col, "_6_variable_distribution.png"))
-    )
-    
-    plot_result <- plot_alpha_div_custom(
-      ps_obj,
-      group_var = col,
-      color_var = col,
-      measure = measure,
-      comparisons = var_comparisons,
-      palette = var_palette,
-      title = paste("Variable:", col, "\nAlpha Diversity Distribution")
-    )
-    
-    p6 <- plot_result$plot +
-      geom_violin(trim = FALSE, alpha = 0.2, aes(fill = .data[[col]])) +
-      geom_boxplot(width = 0.3, alpha = 0.8, outlier.shape = NA) +
-      geom_jitter(size = 1.5, alpha = 0.6, width = 0.2, height = 0) +
-      scale_fill_manual(values = var_palette) +
-      theme_bw(base_size = 14) +
-      theme(
-        plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
-        axis.title = element_text(size = 12),
-        axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
-        axis.text.y = element_text(size = 11),
-        legend.position = "none",
-        plot.margin = margin(t = 15, r = 10, b = 10, l = 10)
-      ) +
-      ylab(paste(measure, "Diversity"))
-    
-    var_plots[[6]] <- p6
-    
-    # Save plot
-    ggsave(
-      filename = file.path(var_dir, paste0(col, "_6_variable_distribution.png")),
-      plot = p6,
-      width = max(8, length(unique_vals) * 1.5),  # Adjust width based on number of categories
-      height = 6,
-      dpi = 300
-    )
-  }
-  
-  cat("  Completed processing for variable:", col, "\n")
-}
-
-# Create summary
-cat("\n=== PROCESSING COMPLETE ===\n")
-cat("All plots have been saved in:", output_dir, "\n")
-cat("\nFor each categorical variable, you should find:\n")
-cat("1. Variable_1_groups_in_timepoint-1.png\n")
-cat("2. Variable_2_groups_in_timepoint-2.png\n")
-cat("3. Variable_3_groupA_timepoints.png\n")
-cat("4. Variable_4_groupB_timepoints.png\n")
-cat("5. Variable_5_groupC_timepoints.png\n")
-cat("6. Variable_6_variable_distribution.png\n")
-cat("\nFor each plot, two CSV files are also saved:\n")
-cat("1. [plotname]_alpha_data.csv - Alpha diversity values for each sample\n")
-cat("2. [plotname]_stats.csv - Statistical test results with p-values\n")
-cat("\nColor scheme:\n")
-cat("- Group A: Light red (#FF9999) for -1, Red (#FF3333) for -2\n")
-cat("- Group B: Light blue (#99CCFF) for -1, Blue (#3366FF) for -2\n")
-cat("- Group C: Light green (#99FF99) for -1, Green (#33CC33) for -2\n")
-```
-
-# other alpha-div metrics
-```{r}
-# ----------------------------------------------------------------------
-# Load required libraries
-# ----------------------------------------------------------------------
+library(tidyverse)
 library(vegan)
-library(phyloseq)
-library(microbiome)
-library(ggplot2)
 library(ggpubr)
-library(tools)
-library(RColorBrewer)   # for colour palettes (fallback)
 
-# ----------------------------------------------------------------------
-# Define the alpha diversity measures to iterate over
-# ----------------------------------------------------------------------
-measures <- c("Shannon", "Chao1", "Simpson", "InvSimpson", "Observed")
+# ------------------------------------------------------------
+# 1. Load phyloseq object and remove bad batches
+# ------------------------------------------------------------
+ps <- readRDS('./RSF_all_physeq_wgs_COUNTS_v3.rds')
 
-# ----------------------------------------------------------------------
-# Function: plot_alpha_div_custom (now with error handling)
-# ----------------------------------------------------------------------
-plot_alpha_div_custom <- function(
-    ps_obj,
-    group_var,
-    color_var = NULL,
-    measure = 'Shannon',
-    comparisons = NULL,
-    palette = NULL,
-    title = ""
-) {
-  if (is.null(color_var)) {
-    color_var <- group_var
-  }
-  
-  # Calculate alpha diversity with error handling
-  alpha_df <- tryCatch({
-    df <- microbiome::alpha(ps_obj, index = measure)
-    # Ensure it's a data frame with one column
-    if (is.null(df) || ncol(df) == 0) {
-      stop("microbiome::alpha returned empty result")
-    }
-    colnames(df) <- measure
-    df
-  }, error = function(e) {
-    # Fallback to estimate_richness
-    message("  Note: microbiome::alpha failed for ", measure, 
-            ", using estimate_richness() instead.")
-    alpha_est <- estimate_richness(ps_obj, measures = measure)
-    df <- data.frame(alpha_est)
-    colnames(df) <- measure
-    df
-  })
-  
-  # Get sample data
-  meta_df <- as.data.frame(sample_data(ps_obj))
-  
-  # Convert grouping variables to factors if they're not already
-  if (!is.factor(meta_df[[group_var]])) {
-    meta_df[[group_var]] <- factor(meta_df[[group_var]])
-  }
-  if (!is.factor(meta_df[[color_var]])) {
-    meta_df[[color_var]] <- factor(meta_df[[color_var]])
-  }
-  
-  # Combine alpha diversity with metadata
-  plot_df <- cbind(alpha_df, meta_df)
-  
-  # Create the base plot
-  p <- ggplot(plot_df, aes_string(x = group_var, y = measure, color = color_var)) +
-    geom_boxplot(outlier.shape = NA, width = 0.3) +
-    geom_jitter(width = 0.2, alpha = 0.6, size = 1.5) +
-    theme_bw(base_size = 12) +
-    labs(title = title,
-         x = group_var,
-         y = paste(measure, "Diversity"))
-  
-  # Add comparisons if provided - REVERTED TO STANDARD STARS
-  if (!is.null(comparisons)) {
-    # Ensure comparisons are in the right format (as characters, not integers)
-    comparisons <- lapply(comparisons, function(x) {
-      as.character(x)
-    })
-    
-    # Add standard significance stars (no p-values)
-    p <- p + ggpubr::stat_compare_means(
-      comparisons = comparisons, 
-      method = "wilcox.test", 
-      label = "p.signif",  # Just stars
-      size = 5,
-      step.increase = 0.1,
-      tip.length = 0.02
-    )
-  }
-  
-  # Add palette if provided
-  if (!is.null(palette)) {
-    p <- p + scale_color_manual(values = palette)
-  }
-  
-  return(list(plot = p, data = plot_df))
+ps@sam_data$Batch <- as.factor(ps@sam_data$Batch)
+#bad_batch_samples <- c("AO-203-2", "AO-207-1", "B-022-2", "MB124-2")
+bad_batch_samples <- c('B-024-1', 'B-024-2', 'B-027-2', 'B-030-2')
+if (length(bad_batch_samples) > 0) {
+  ps <- prune_samples(!(sample_names(ps) %in% bad_batch_samples), ps)
+  cat("Removed", length(bad_batch_samples), "samples\n")
 }
 
-# ----------------------------------------------------------------------
-# Function: save_statistics (robust version with tryCatch)
-# ----------------------------------------------------------------------
-save_statistics <- function(
-    ps_obj,
-    group_var,
-    measure = 'Shannon',
-    comparisons = NULL,
-    filename
-) {
-  # Calculate alpha diversity - with error handling
-  alpha_df <- tryCatch({
-    df <- microbiome::alpha(ps_obj, index = measure)
-    colnames(df) <- measure
-    df
-  }, error = function(e) {
-    cat("  WARNING: microbiome::alpha() failed, using estimate_richness()\n")
-    alpha_est <- estimate_richness(ps_obj, measures = measure)
-    df <- data.frame(alpha_est)
-    colnames(df) <- measure
-    df
-  })
+# ------------------------------------------------------------
+# 2. Create Strata column (and replace original Group)
+# ------------------------------------------------------------
+sam <- data.frame(sample_data(ps), stringsAsFactors = FALSE)
+sam$SampleID <- rownames(sam)
+
+sam$Strata <- NA_character_
+sam$Strata[sam$Group == "A"] <- "AB"
+sam$Strata[sam$Group == "C"] <- "NO"
+sam$Strata[sam$Proton_Pump_Inhibitors == "Yes" & is.na(sam$Strata)] <- "PPI"
+sam$Strata[sam$Group == "B" & is.na(sam$Strata) & sam$Proton_Pump_Inhibitors == "No"] <- "OTH"
+sam$Strata <- factor(sam$Strata, levels = c("AB", "PPI", "OTH", "NO"))
+
+# Check assignment
+if (any(is.na(sam$Strata))) {
+  cat("Warning: unassigned samples:\n")
+  print(table(sam$Group[is.na(sam$Strata)], sam$Proton_Pump_Inhibitors[is.na(sam$Strata)]))
+}
+sam$Strata <- factor(sam$Strata, levels = c("AB", "PPI", "OTH", "NO"))
+
+# Replace the original Group with Strata for plotting
+sample_data(ps) <- sam
+sample_data(ps)$Group <- sample_data(ps)$Strata   # overwrite Group
+
+# ------------------------------------------------------------
+# 3. Compute Shannon and prepare paired data
+# ------------------------------------------------------------
+# Extract metadata
+meta <- data.frame(sample_data(ps), stringsAsFactors = FALSE)
+meta$SampleID <- rownames(meta)
+meta <- as_tibble(meta)
+otu_mat <- as.matrix(otu_table(ps))
+
+# OTU table -> Shannon (samples as rows)
+#if (taxa_are_rows(ps)) {
+#  otu_mat <- t(as.matrix(otu_table(ps)))
+#} else {
+#  otu_mat <- as.matrix(otu_table(ps))
+#}
+otu_mat <- t(as.matrix(otu_table(ps)))
+#mode(otu_mat) <- "numeric"
+shannon_vals <- microbiome::diversity(otu_mat, index = "shannon")
+shannon_df <- data.frame(SampleID = rownames(shannon_vals), 
+                         Shannon = shannon_vals, 
+                         stringsAsFactors = FALSE)
+
+# Merge
+meta$Shannon <- shannon_df$shannon[match(meta$SampleID, shannon_df$SampleID)]
+stopifnot(!all(is.na(meta$Shannon)))
+
+# Keep only patients with both timepoints (-1 and -2)
+paired <- meta %>%
+  group_by(No_Patient) %>%
+  filter(all(c("-1", "-2") %in% Timepoint)) %>%
+  ungroup()
+
+cat("Number of paired patients:", n_distinct(paired$No_Patient), "\n")
+cat("Shannon summary:\n")
+print(summary(paired$Shannon))
+cat("Strata counts in paired data:\n")
+print(table(paired$Strata))
+
+# ------------------------------------------------------------
+# 4. Plot: Strata on x-axis, two timepoints per strata
+# ------------------------------------------------------------
+plot_paired_shannon <- function(data, output_dir) {
   
-  # Get sample data
-  meta_df <- as.data.frame(sample_data(ps_obj))
+  data$Timepoint <- factor(data$Timepoint, levels = c("-1", "-2"))
+  data$Group <- factor(data$Group, levels = c("AB", "PPI", "OTH", "NO"))  # ensure order
+  data <- data %>% filter(!is.na(Shannon))
   
-  # Convert grouping variable to factor if needed
-  if (!is.factor(meta_df[[group_var]])) {
-    meta_df[[group_var]] <- factor(meta_df[[group_var]])
+  if (nrow(data) == 0) {
+    cat("  No valid Shannon values. Skipping plot.\n")
+    return(NULL)
   }
   
-  # Combine alpha diversity with metadata
-  plot_df <- cbind(alpha_df, meta_df)
+  time_colors <- c("-1" = "#1f77b4", "-2" = "#ff7f0e")
   
-  # Save alpha diversity data
-  alpha_data_file <- paste0(tools::file_path_sans_ext(filename), "_alpha_data.csv")
-  write.csv(plot_df, alpha_data_file, row.names = TRUE)
-  cat("  Saved alpha diversity data:", alpha_data_file, "\n")
+  p <- ggplot(data, aes(x = Group, y = Shannon, fill = Timepoint)) +
+    geom_boxplot(alpha = 0.7, outlier.shape = NA, 
+                 position = position_dodge(width = 0.8), width = 0.6) +
+    geom_point(position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8), 
+               size = 2, alpha = 0.6, aes(color = Timepoint)) +
+    scale_fill_manual(values = time_colors, name = "Timepoint") +
+    scale_color_manual(values = time_colors, guide = "none") +
+    theme_bw(base_size = 14) +
+    labs(y = "Shannon Index") +
+    theme(plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+          legend.position = "top")
   
-  # Perform statistical tests if comparisons are provided
-  if (!is.null(comparisons) && length(comparisons) > 0) {
-    stats_results <- data.frame()
-    
-    for (i in seq_along(comparisons)) {
-      comp <- comparisons[[i]]
-      group1 <- as.character(comp[1])
-      group2 <- as.character(comp[2])
-      
-      # Check if groups exist in data
-      if (!group1 %in% plot_df[[group_var]] || !group2 %in% plot_df[[group_var]]) {
-        cat("  WARNING: Skipping comparison", group1, "vs", group2, "- groups not in data\n")
-        next
-      }
-      
-      # Extract data for the two groups
-      data1 <- plot_df[plot_df[[group_var]] == group1, measure]
-      data2 <- plot_df[plot_df[[group_var]] == group2, measure]
-      
-      # Perform Wilcoxon test
-      if (length(data1) > 1 && length(data2) > 1) {
-        test_result <- tryCatch({
-          wilcox.test(data1, data2, exact = FALSE)
-        }, error = function(e) {
-          cat("  ERROR in wilcox.test for", group1, "vs", group2, ":", e$message, "\n")
-          NULL
-        })
-        
-        if (!is.null(test_result)) {
-          stats_row <- data.frame(
-            Comparison = paste(group1, "vs", group2),
-            Group1 = group1,
-            Group2 = group2,
-            N_Group1 = length(data1),
-            N_Group2 = length(data2),
-            Mean_Group1 = mean(data1, na.rm = TRUE),
-            Mean_Group2 = mean(data2, na.rm = TRUE),
-            SD_Group1 = sd(data1, na.rm = TRUE),
-            SD_Group2 = sd(data2, na.rm = TRUE),
-            W_statistic = test_result$statistic,
-            P_value = test_result$p.value,
-            P_value_rounded = round(test_result$p.value, 4),
-            Significance = ifelse(test_result$p.value < 0.001, "***",
-                                  ifelse(test_result$p.value < 0.01, "**",
-                                         ifelse(test_result$p.value < 0.05, "*", "ns")))
-          )
-          
-          stats_results <- rbind(stats_results, stats_row)
-        }
-      } else {
-        cat("  WARNING: Not enough data for comparison", group1, "vs", group2, "\n")
+  # Paired Wilcoxon tests for each strata
+  groups <- levels(data$Group)
+  p_vals <- data.frame()
+  for (g in groups) {
+    sub <- data %>% filter(Group == g)
+    if (n_distinct(sub$Timepoint) == 2 && nrow(sub) >= 2) {
+      wide <- sub %>% select(No_Patient, Timepoint, Shannon) %>%
+        pivot_wider(names_from = Timepoint, values_from = Shannon)
+      if (sum(!is.na(wide[["-1"]])) >= 2 && sum(!is.na(wide[["-2"]])) >= 2) {
+        test <- wilcox.test(wide[["-1"]], wide[["-2"]], paired = TRUE, exact = FALSE)
+        p_vals <- rbind(p_vals, data.frame(Group = g, p.value = test$p.value))
       }
     }
+  }
+  
+  if (nrow(p_vals) > 0) {
+    p_vals$signif <- ifelse(p_vals$p.value < 0.001, "***",
+                            ifelse(p_vals$p.value < 0.01, "**",
+                                   ifelse(p_vals$p.value < 0.05, "*", "ns")))
+    y_max <- max(data$Shannon, na.rm = TRUE)
+    y_range <- diff(range(data$Shannon, na.rm = TRUE))
+    bracket_y <- y_max + 0.05 * y_range
+    step <- 0.08 * y_range
     
-    # Save statistics results
-    if (nrow(stats_results) > 0) {
-      stats_file <- paste0(tools::file_path_sans_ext(filename), "_stats.csv")
-      write.csv(stats_results, stats_file, row.names = FALSE)
-      cat("  Saved statistics results:", stats_file, "\n")
-    } else {
-      cat("  WARNING: No statistical results to save\n")
+    for (i in 1:nrow(p_vals)) {
+      g <- p_vals$Group[i]
+      x_pos <- as.numeric(factor(g, levels = groups))
+      x1 <- x_pos - 0.2
+      x2 <- x_pos + 0.2
+      p <- p + annotate("segment", x = x1, xend = x2, y = bracket_y + (i-1)*step,
+                        yend = bracket_y + (i-1)*step, color = "black") +
+        annotate("text", x = x_pos, y = bracket_y + (i-1)*step + 0.02*y_range,
+                 label = p_vals$signif[i], size = 5, vjust = 0)
     }
   }
   
-  return(plot_df)
+  p <- p + ggtitle("Shannon Diversity by Timepoint")
+  
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+  fname <- "paired_shannon_strata_AB_PPI_OTH_NO.png"
+  ggsave(file.path(output_dir, fname), p, width = 8, height = 6, dpi = 300)
+  cat("  Saved:", file.path(output_dir, fname), "\n")
+  return(p)
 }
 
-# ----------------------------------------------------------------------
-# Read the phyloseq object (adjust the path if needed)
-# ----------------------------------------------------------------------
-ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
-
-# Prepare the object as in your original code
-meta <- sample_data(ps)
-meta$Batch <- as.factor(meta$Batch)
-ps_obj <- ps
-level <- 'Species'
-det <- 1/100
-prev <- 10/100
-
-# Filter taxa (core microbiome)
-taxas <- core_members(ps_obj, detection = det, prevalence = prev, include.lowest = FALSE)
-ps_obj <- prune_taxa(taxas, ps_obj)
-
-# Glom to species level (using speedyseq if available, otherwise phyloseq)
-if (requireNamespace("speedyseq", quietly = TRUE)) {
-  ps_obj <- speedyseq::tax_glom(ps_obj, taxrank = level, NArm = TRUE)
-} else {
-  message("speedyseq not installed; using phyloseq::tax_glom (may drop NAs differently)")
-  ps_obj <- tax_glom(ps_obj, taxrank = level, NArm = TRUE)
-}
-
-# Define categorical variables to loop over
-categorical_vars <- names(meta)[sapply(meta, function(x) is.factor(x) || is.character(x))]
-categorical_vars <- setdiff(categorical_vars, c('Age', "Group", 'BMI', 'Height', 'No_Patient', 
-                                                'Weight', "SampleID"))
-
-# Convert to factors
-for (col in categorical_vars) {
-  if (col %in% colnames(meta) && (is.character(meta[[col]]) || is.integer(meta[[col]]))) {
-    sample_data(ps_obj)[[col]] <- as.factor(sample_data(ps_obj)[[col]])
+# ------------------------------------------------------------
+# 5. Run the plot
+# ------------------------------------------------------------
+output_dir <- "/paired_shannon_analysis_custom_strata"
+plot_paired_shannon(paired, output_dir)
+plot_paired_shannon <- function(data, output_dir) {
+  
+  data$Timepoint <- factor(data$Timepoint, levels = c("-1", "-2"))
+  data$Group <- factor(data$Group, levels = c("AB", "PPI", "OTH", "NO"))
+  data <- data %>% filter(!is.na(Shannon))
+  
+  if (nrow(data) == 0) {
+    cat("  No valid Shannon values. Skipping plot.\n")
+    return(NULL)
   }
-}
-
-# Ensure Group and Timepoint are factors
-sample_data(ps_obj)$Timepoint <- factor(as.character(sample_data(ps_obj)$Timepoint))
-sample_data(ps_obj)$Group <- factor(sample_data(ps_obj)$Group)
-
-# Get unique groups and timepoints
-groups <- as.factor(sort(unique(sample_data(ps_obj)$Group)))
-timepoints <- as.factor(sort(unique(sample_data(ps_obj)$Timepoint)))
-
-# Define colour palettes (unchanged)
-groupA_colors <- c("-1" = "#FF9999", "-2" = "#FF3333")
-groupB_colors <- c("-1" = "#99CCFF", "-2" = "#3366FF")
-groupC_colors <- c("-1" = "#99FF99", "-2" = "#33CC33")
-group_palette_time1 <- c("A" = "#FF9999", "B" = "#99CCFF", "C" = "#99FF99")
-group_palette_time2 <- c("A" = "#FF3333", "B" = "#3366FF", "C" = "#33CC33")
-timepoint_palettes <- list("A" = groupA_colors, "B" = groupB_colors, "C" = groupC_colors)
-
-# ----------------------------------------------------------------------
-# Outer loop over alpha diversity measures
-# ----------------------------------------------------------------------
-for (measure in measures) {
-  cat("\n========================================\n")
-  cat("Processing measure:", measure, "\n")
-  cat("========================================\n")
   
-  # Create measure‑specific output directory
-  base_output_dir <- file.path("/home/sonec_iv/alpha_diversity", measure)
-  dir.create(base_output_dir, showWarnings = FALSE, recursive = TRUE)
+  # ---- Colours (unchanged) ----
+  strata_colors_reg <- c(
+    AB  = "#E41A1C",
+    PPI = "#377EB8",
+    OTH = "#4DAF4A",
+    NO  = "#984EA3"
+  )
   
-  # Loop through each categorical variable
-  for (col in categorical_vars) {
-    cat("\nProcessing variable:", col, "for measure", measure, "\n")
-    
-    # Create a subdirectory for this variable inside the measure folder
-    var_dir <- file.path(base_output_dir, col)
-    dir.create(var_dir, showWarnings = FALSE)
-    
-    # Skip if not enough unique values
-    if (length(unique(sample_data(ps_obj)[[col]])) < 2) {
-      cat("  Skipping - less than 2 unique values\n")
-      next
-    }
-    
-    # Store plots for this variable (optional)
-    var_plots <- list()
-    
-    # PLOT 1: Groups A vs B vs C in Timepoint -1
-    cat("  Creating Plot 1: Groups in Timepoint -1\n")
-    ps_time1 <- subset_samples(ps_obj, Timepoint == "-1")
-    
-    if (nsamples(ps_time1) >= 2 && length(unique(sample_data(ps_time1)$Group)) >= 2) {
-      group_comparisons <- lapply(combn(groups, 2, simplify = FALSE), as.vector)
-      
-      stats_data <- save_statistics(
-        ps_time1,
-        group_var = "Group",
-        measure = measure,
-        comparisons = group_comparisons,
-        filename = file.path(var_dir, paste0(col, "_1_groups_in_timepoint-1.png"))
-      )
-      
-      plot_result <- plot_alpha_div_custom(
-        ps_time1,
-        group_var = "Group",
-        color_var = "Group",
-        measure = measure,
-        comparisons = group_comparisons,
-        palette = group_palette_time1,
-        title = paste(measure, "Diversity -", col, "\nGroups in Timepoint -1")
-      )
-      
-      p1 <- plot_result$plot +
-        geom_violin(trim = FALSE, alpha = 0.2, aes(fill = Group)) +
-        geom_boxplot(width = 0.3, alpha = 0.8, outlier.shape = NA) +
-        geom_jitter(size = 1.5, alpha = 0.6, width = 0.2, height = 0) +
-        scale_fill_manual(values = group_palette_time1) +
-        theme_bw(base_size = 14) +
-        theme(
-          plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
-          axis.title = element_text(size = 12),
-          axis.text = element_text(size = 11),
-          legend.position = "none",
-          plot.margin = margin(t = 15, r = 10, b = 10, l = 10)
-        ) +
-        ylab(paste(measure, "Diversity"))
-      
-      var_plots[[1]] <- p1
-      
-      ggsave(
-        filename = file.path(var_dir, paste0(col, "_1_groups_in_timepoint-1.png")),
-        plot = p1,
-        width = 8,
-        height = 6,
-        dpi = 300
-      )
-    }
-    
-    # PLOT 2: Groups A vs B vs C in Timepoint -2
-    cat("  Creating Plot 2: Groups in Timepoint -2\n")
-    ps_time2 <- subset_samples(ps_obj, Timepoint == "-2")
-    
-    if (nsamples(ps_time2) >= 2 && length(unique(sample_data(ps_time2)$Group)) >= 2) {
-      # Reuse group_comparisons from Plot 1 (already defined)
-      stats_data <- save_statistics(
-        ps_time2,
-        group_var = "Group",
-        measure = measure,
-        comparisons = group_comparisons,
-        filename = file.path(var_dir, paste0(col, "_2_groups_in_timepoint-2.png"))
-      )
-      
-      plot_result <- plot_alpha_div_custom(
-        ps_time2,
-        group_var = "Group",
-        color_var = "Group",
-        measure = measure,
-        comparisons = group_comparisons,
-        palette = group_palette_time2,
-        title = paste(measure, "Diversity -", col, "\nGroups in Timepoint -2")
-      )
-      
-      p2 <- plot_result$plot +
-        geom_violin(trim = FALSE, alpha = 0.2, aes(fill = Group)) +
-        geom_boxplot(width = 0.3, alpha = 0.8, outlier.shape = NA) +
-        geom_jitter(size = 1.5, alpha = 0.6, width = 0.2, height = 0) +
-        scale_fill_manual(values = group_palette_time2) +
-        theme_bw(base_size = 14) +
-        theme(
-          plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
-          axis.title = element_text(size = 12),
-          axis.text = element_text(size = 11),
-          legend.position = "none",
-          plot.margin = margin(t = 15, r = 10, b = 10, l = 10)
-        ) +
-        ylab(paste(measure, "Diversity"))
-      
-      var_plots[[2]] <- p2
-      
-      ggsave(
-        filename = file.path(var_dir, paste0(col, "_2_groups_in_timepoint-2.png")),
-        plot = p2,
-        width = 8,
-        height = 6,
-        dpi = 300
-      )
-    }
-    
-    # PLOT 3: Group A - Timepoint -1 vs -2
-    cat("  Creating Plot 3: Group A timepoints\n")
-    ps_groupA <- subset_samples(ps_obj, Group == "A")
-    
-    if (nsamples(ps_groupA) >= 2 && length(unique(sample_data(ps_groupA)$Timepoint)) >= 2) {
-      time_comparisons <- list(c("-1", "-2"))
-      
-      stats_data <- save_statistics(
-        ps_groupA,
-        group_var = "Timepoint",
-        measure = measure,
-        comparisons = time_comparisons,
-        filename = file.path(var_dir, paste0(col, "_3_groupA_timepoints.png"))
-      )
-      
-      plot_result <- plot_alpha_div_custom(
-        ps_groupA,
-        group_var = "Timepoint",
-        color_var = "Timepoint",
-        measure = measure,
-        comparisons = time_comparisons,
-        palette = timepoint_palettes[["A"]],
-        title = paste(measure, "Diversity -", col, "\nGroup A: Timepoint -1 vs -2")
-      )
-      
-      p3 <- plot_result$plot +
-        geom_violin(trim = FALSE, alpha = 0.2, aes(fill = Timepoint)) +
-        geom_boxplot(width = 0.3, alpha = 0.8, outlier.shape = NA) +
-        geom_jitter(size = 1.5, alpha = 0.6, width = 0.2, height = 0) +
-        scale_fill_manual(values = timepoint_palettes[["A"]]) +
-        theme_bw(base_size = 14) +
-        theme(
-          plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
-          axis.title = element_text(size = 12),
-          axis.text = element_text(size = 11),
-          legend.position = "none",
-          plot.margin = margin(t = 15, r = 10, b = 10, l = 10)
-        ) +
-        ylab(paste(measure, "Diversity"))
-      
-      var_plots[[3]] <- p3
-      
-      ggsave(
-        filename = file.path(var_dir, paste0(col, "_3_groupA_timepoints.png")),
-        plot = p3,
-        width = 8,
-        height = 6,
-        dpi = 300
-      )
-    }
-    
-    # PLOT 4: Group B - Timepoint -1 vs -2
-    cat("  Creating Plot 4: Group B timepoints\n")
-    ps_groupB <- subset_samples(ps_obj, Group == "B")
-    
-    if (nsamples(ps_groupB) >= 2 && length(unique(sample_data(ps_groupB)$Timepoint)) >= 2) {
-      stats_data <- save_statistics(
-        ps_groupB,
-        group_var = "Timepoint",
-        measure = measure,
-        comparisons = time_comparisons,
-        filename = file.path(var_dir, paste0(col, "_4_groupB_timepoints.png"))
-      )
-      
-      plot_result <- plot_alpha_div_custom(
-        ps_groupB,
-        group_var = "Timepoint",
-        color_var = "Timepoint",
-        measure = measure,
-        comparisons = time_comparisons,
-        palette = timepoint_palettes[["B"]],
-        title = paste(measure, "Diversity -", col, "\nGroup B: Timepoint -1 vs -2")
-      )
-      
-      p4 <- plot_result$plot +
-        geom_violin(trim = FALSE, alpha = 0.2, aes(fill = Timepoint)) +
-        geom_boxplot(width = 0.3, alpha = 0.8, outlier.shape = NA) +
-        geom_jitter(size = 1.5, alpha = 0.6, width = 0.2, height = 0) +
-        scale_fill_manual(values = timepoint_palettes[["B"]]) +
-        theme_bw(base_size = 14) +
-        theme(
-          plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
-          axis.title = element_text(size = 12),
-          axis.text = element_text(size = 11),
-          legend.position = "none",
-          plot.margin = margin(t = 15, r = 10, b = 10, l = 10)
-        ) +
-        ylab(paste(measure, "Diversity"))
-      
-      var_plots[[4]] <- p4
-      
-      ggsave(
-        filename = file.path(var_dir, paste0(col, "_4_groupB_timepoints.png")),
-        plot = p4,
-        width = 8,
-        height = 6,
-        dpi = 300
-      )
-    }
-    
-    # PLOT 5: Group C - Timepoint -1 vs -2
-    cat("  Creating Plot 5: Group C timepoints\n")
-    ps_groupC <- subset_samples(ps_obj, Group == "C")
-    
-    if (nsamples(ps_groupC) >= 2 && length(unique(sample_data(ps_groupC)$Timepoint)) >= 2) {
-      stats_data <- save_statistics(
-        ps_groupC,
-        group_var = "Timepoint",
-        measure = measure,
-        comparisons = time_comparisons,
-        filename = file.path(var_dir, paste0(col, "_5_groupC_timepoints.png"))
-      )
-      
-      plot_result <- plot_alpha_div_custom(
-        ps_groupC,
-        group_var = "Timepoint",
-        color_var = "Timepoint",
-        measure = measure,
-        comparisons = time_comparisons,
-        palette = timepoint_palettes[["C"]],
-        title = paste(measure, "Diversity -", col, "\nGroup C: Timepoint -1 vs -2")
-      )
-      
-      p5 <- plot_result$plot +
-        geom_violin(trim = FALSE, alpha = 0.2, aes(fill = Timepoint)) +
-        geom_boxplot(width = 0.3, alpha = 0.8, outlier.shape = NA) +
-        geom_jitter(size = 1.5, alpha = 0.6, width = 0.2, height = 0) +
-        scale_fill_manual(values = timepoint_palettes[["C"]]) +
-        theme_bw(base_size = 14) +
-        theme(
-          plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
-          axis.title = element_text(size = 12),
-          axis.text = element_text(size = 11),
-          legend.position = "none",
-          plot.margin = margin(t = 15, r = 10, b = 10, l = 10)
-        ) +
-        ylab(paste(measure, "Diversity"))
-      
-      var_plots[[5]] <- p5
-      
-      ggsave(
-        filename = file.path(var_dir, paste0(col, "_5_groupC_timepoints.png")),
-        plot = p5,
-        width = 8,
-        height = 6,
-        dpi = 300
-      )
-    }
-    
-    # PLOT 6: Alpha diversity by the categorical variable itself
-    cat("  Creating Plot 6: Variable distribution\n")
-    unique_vals <- unique(sample_data(ps_obj)[[col]])
-    if (length(unique_vals) >= 2) {
-      var_comparisons <- lapply(combn(unique_vals, 2, simplify = FALSE), as.vector)
-      
-      # Create a colour palette
-      n_colors <- length(unique_vals)
-      if (requireNamespace("pnw", quietly = TRUE)) {
-        # If pnw is installed, use it
-        if (n_colors <= 8) {
-          var_palette <- pnw::pnw_palette("Sunset2", n_colors, type = "continuous")
-        } else {
-          base_pal <- pnw::pnw_palette("Sunset2", 8, type = "continuous")
-          var_palette <- colorRampPalette(base_pal)(n_colors)
-        }
-      } else {
-        # Fallback: use RColorBrewer or rainbow
-        if (n_colors <= 9) {
-          var_palette <- brewer.pal(n_colors, "Set1")
-        } else {
-          var_palette <- rainbow(n_colors)
-        }
+  lighten <- function(col, factor = 0.6) {
+    rgb(t(col2rgb(col) + (255 - col2rgb(col)) * factor), maxColorValue = 255)
+  }
+  strata_colors_light <- sapply(strata_colors_reg, lighten)
+  
+  all_color_names <- c(paste0(names(strata_colors_reg),   "_-2"),
+                       paste0(names(strata_colors_light), "_-1"))
+  all_color_values <- c(unname(strata_colors_reg),
+                        unname(strata_colors_light))
+  all_colors <- setNames(all_color_values, all_color_names)
+  
+  data$GroupTime <- interaction(data$Group, data$Timepoint, sep = "_")
+  
+  # ---- Base plot ----
+  p <- ggplot(data, aes(x = Group, y = Shannon, fill = GroupTime)) +
+    geom_boxplot(alpha = 0.7, outlier.shape = NA, 
+                 position = position_dodge(width = 0.8), width = 0.6) +
+    geom_point(position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8), 
+               size = 2, alpha = 0.6, aes(color = GroupTime)) +
+    scale_fill_manual(
+      values = all_colors,
+      breaks = paste0(names(strata_colors_reg), "_-2"),
+      labels = names(strata_colors_reg),
+      name = "Group"
+    ) +
+    scale_color_manual(values = all_colors, guide = "none") +
+    theme_bw(base_size = 14) +
+    labs(y = "Shannon Index") +
+    theme(plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+          legend.position = "top",
+          plot.margin = margin(5, 5, 15, 5))   # extra bottom space for labels
+  
+  # ---- Timepoint labels at the x-axis (below each box) ----
+  # One label per group×timepoint, positioned at y = -Inf (bottom of panel)
+  label_df <- data %>%
+    group_by(Group, Timepoint) %>%
+    summarise(.groups = "drop") %>%
+    mutate(GroupTime = interaction(Group, Timepoint, sep = "_"))
+  
+  p <- p + geom_text(
+    data = label_df,
+    aes(x = Group, y = -Inf, label = Timepoint, group = GroupTime),
+    position = position_dodge(width = 0.8),
+    size = 3,
+    vjust = 1.5,                 # pushes text below the panel edge
+    inherit.aes = FALSE
+  ) +
+    coord_cartesian(clip = "off")  # allow drawing outside the panel
+  
+  # ---- Paired Wilcoxon tests (unchanged) ----
+  groups <- levels(data$Group)
+  p_vals <- data.frame()
+  for (g in groups) {
+    sub <- data %>% filter(Group == g)
+    if (n_distinct(sub$Timepoint) == 2 && nrow(sub) >= 2) {
+      wide <- sub %>% select(No_Patient, Timepoint, Shannon) %>%
+        pivot_wider(names_from = Timepoint, values_from = Shannon)
+      if (sum(!is.na(wide[["-1"]])) >= 2 && sum(!is.na(wide[["-2"]])) >= 2) {
+        test <- wilcox.test(wide[["-1"]], wide[["-2"]], paired = TRUE, exact = FALSE)
+        p_vals <- rbind(p_vals, data.frame(Group = g, p.value = test$p.value))
       }
-      names(var_palette) <- unique_vals
-      
-      stats_data <- save_statistics(
-        ps_obj,
-        group_var = col,
-        measure = measure,
-        comparisons = var_comparisons,
-        filename = file.path(var_dir, paste0(col, "_6_variable_distribution.png"))
-      )
-      
-      plot_result <- plot_alpha_div_custom(
-        ps_obj,
-        group_var = col,
-        color_var = col,
-        measure = measure,
-        comparisons = var_comparisons,
-        palette = var_palette,
-        title = paste(measure, "Diversity -", col, "\nDistribution by", col)
-      )
-      
-      p6 <- plot_result$plot +
-        geom_violin(trim = FALSE, alpha = 0.2, aes(fill = .data[[col]])) +
-        geom_boxplot(width = 0.3, alpha = 0.8, outlier.shape = NA) +
-        geom_jitter(size = 1.5, alpha = 0.6, width = 0.2, height = 0) +
-        scale_fill_manual(values = var_palette) +
-        theme_bw(base_size = 14) +
-        theme(
-          plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
-          axis.title = element_text(size = 12),
-          axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
-          axis.text.y = element_text(size = 11),
-          legend.position = "none",
-          plot.margin = margin(t = 15, r = 10, b = 10, l = 10)
-        ) +
-        ylab(paste(measure, "Diversity"))
-      
-      var_plots[[6]] <- p6
-      
-      ggsave(
-        filename = file.path(var_dir, paste0(col, "_6_variable_distribution.png")),
-        plot = p6,
-        width = max(8, length(unique_vals) * 1.5),
-        height = 6,
-        dpi = 300
-      )
     }
-    
-    cat("  Completed processing for variable:", col, "\n")
   }
   
-  cat("\n--- Finished measure:", measure, "---\n")
+  if (nrow(p_vals) > 0) {
+    p_vals$signif <- ifelse(p_vals$p.value < 0.001, "***",
+                            ifelse(p_vals$p.value < 0.01, "**",
+                                   ifelse(p_vals$p.value < 0.05, "*", "ns")))
+    y_max <- max(data$Shannon, na.rm = TRUE)
+    y_range <- diff(range(data$Shannon, na.rm = TRUE))
+    bracket_y <- y_max + 0.05 * y_range
+    step <- 0.08 * y_range
+    
+    for (i in 1:nrow(p_vals)) {
+      g <- p_vals$Group[i]
+      x_pos <- as.numeric(factor(g, levels = groups))
+      x1 <- x_pos - 0.2
+      x2 <- x_pos + 0.2
+      p <- p + annotate("segment", x = x1, xend = x2, y = bracket_y + (i-1)*step,
+                        yend = bracket_y + (i-1)*step, color = "black") +
+        annotate("text", x = x_pos, y = bracket_y + (i-1)*step + 0.02*y_range,
+                 label = p_vals$signif[i], size = 5, vjust = 0)
+    }
+  }
+  
+  p <- p + ggtitle("Shannon Diversity by Timepoint")
+  
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+  fname <- "paired_shannon_strata_AB_PPI_OTH_NO.png"
+  ggsave(file.path(output_dir, fname), p, width = 8, height = 6, dpi = 300)
+  cat("  Saved:", file.path(output_dir, fname), "\n")
+  return(p)
 }
-
-cat("\n=== ALL MEASURES PROCESSED ===\n")
+output_dir <- "/paired_shannon_analysis_custom_strata"
+plot_paired_shannon(paired, output_dir)
 ```
-
