@@ -1,0 +1,647 @@
+#libs
+```{r setup, include=FALSE}
+library(phyloseq)
+library(microbiome)
+library(vegan)
+library(speedyseq)
+library(dplyr)
+library(tidyverse)
+library(car)
+```
+
+#read WGS/MAGs phyloseq and PERMANOVA 1st
+```{r}
+#ps <- readRDS('/RSF_res_4_ps/hm3/RSF_ps_humann_joint.rds')
+ps <- readRDS('/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v3.rds')
+
+bad_batch_samples <- c("B-030-2","B-027-2","B-030-1","B-027-1", "B-024-2", "B-024-1")
+if (length(bad_batch_samples) > 0) {
+  ps <- prune_samples(!(sample_names(ps) %in% bad_batch_samples), ps)
+  cat("Removed", length(bad_batch_samples), "samples\n")
+}
+
+#ps <- readRDS('/RSF_res_4_ps/RSF_ps_mags.rds')
+#dist_method <- "euclidean"
+dist_method <- "bray" # Changed variable name to avoid conflict
+#ps_obj <- speedyseq::tax_glom(ps_obj, taxrank = 'Species', NArm = TRUE)
+#ps_obj <- speedyseq::tax_glom(ps_obj, taxrank = 'Genus', NArm = TRUE)
+det <- 1/100
+prev <- 10/100
+#transformation <- 'clr'
+transformation <- 'compositional'
+sam <- data.frame(sample_data(ps), stringsAsFactors = FALSE)
+sam$SampleID <- rownames(sam)
+sam$Strata <- NA_character_
+sam$Strata[sam$Group == "A"] <- "AB"
+sam$Strata[sam$Group == "C"] <- "NO"
+sam$Strata[sam$Proton_Pump_Inhibitors == "Yes" & is.na(sam$Strata)] <- "PPI"
+sam$Strata[sam$Group == "B" & is.na(sam$Strata) & sam$Proton_Pump_Inhibitors == "No"] <- "OTH"
+sam$Strata <- factor(sam$Strata, levels = c("AB", "PPI", "OTH", "NO"))
+sample_data(ps)$Strata <- sam$Strata
+ps_obj <- ps
+ps_obj <- microbiome::transform(ps_obj, transformation)
+taxas <- core_members(ps_obj, detection = det, prevalence = prev)
+ps_obj <- prune_taxa(taxas, ps_obj)
+
+# Corrected PERMANOVA code
+metadf <- as.data.frame(as.matrix(ps_obj@sam_data))
+metadf$No_Patient <- NULL
+# Better way to extract metadata from phyloseq without converting to character
+metadf <- data.frame(sample_data(ps_obj))
+
+# Now let's fix the column types
+# First, let's see what we're working with
+
+# Convert numeric columns
+numeric_cols <- c("Age", "Weight", "Height", "BMI")
+for(col in numeric_cols) {
+  if(col %in% names(metadf)) {
+    metadf[[col]] <- as.numeric(metadf[[col]])
+  }
+}
+names(metadf)
+# Convert factor columns (all the formula variables except the numeric ones we already converted)
+factor_vars <- setdiff(names(metadf), numeric_cols)
+
+for(col in factor_vars) {
+  if(col %in% names(metadf)) {
+    metadf[[col]] <- as.factor(metadf[[col]])
+  }
+}
+
+# Keep ID and Sample_collection_date as character (they're fine as is)
+excluded_columns <- c("Batch", "No_Patient", "SampleID", "Department", "Group", "Antihypertensive_Drugs", 
+                      "Anticoagulants", "Antineoplastic_Drugs", "Antilipidemic_Drugs", "Hypoglycemic_Drugs", 
+                      "Asthma_Treatment_Drugs", "NSAIDs", "Antiarrhythmic_Drugs", "Antibiotics_used")
+factor_vars <- setdiff(factor_vars, excluded_columns)
+# Verify the conversions
+#str(metadf[, c(numeric_cols, factor_vars)])
+
+# Calculate distance matrix - FIXED: using dist_method instead of undefined 'method'
+dist_matrix <- phyloseq::distance(ps_obj, method = dist_method)
+
+# Define your formula variables
+# Create the formula - FIXED: using dist_matrix instead of dist
+formula_vars <- paste(factor_vars, collapse = " + ")
+formula <- as.formula(paste("dist_matrix ~(", formula_vars, ")"))
+
+# Run PERMANOVA - FIXED: using the correct formula and distance matrix
+permanova_result <- adonis2(formula, data = metadf, by = "terms")
+
+# Format results (your colleague's code was correct here)
+res <- as.data.frame(permanova_result)
+res$meta <- row.names(res)
+res <- subset(res, res$meta != 'Total')
+res$meta <- gsub('Residuals', 'other', res$meta)
+res[which(res$`Pr(>F)` > 0.05), 'signif'] <- ' '
+res[which(res$`Pr(>F)` <= 0.05), 'signif'] <- '*'
+res[which(res$`Pr(>F)` <= 0.01), 'signif'] <- '**'
+res[which(res$`Pr(>F)` <= 0.001), 'signif'] <- '***'
+res$Feature <- res$meta
+res$Feature <- factor(res$Feature, levels = res$Feature[order(res$R2, decreasing = FALSE)])
+res
+```
+
+# PERMANOVA VIF check
+```{r}
+# Fixed collinearity check that preserves original variable names
+check_collinearity_fixed <- function(metadata, formula_vars, vif_threshold = 5) {
+  # Extract the variables of interest
+  vars <- unlist(strsplit(formula_vars, "\\+"))
+  vars <- trimws(vars)
+  
+  # Subset metadata to include only relevant variables
+  meta_subset <- metadata[, vars, drop = FALSE]
+  
+  cat("=== VARIABLE TYPES ===\n")
+  print(sapply(meta_subset, class))
+  
+  # Convert to factors where needed
+  meta_factors <- meta_subset
+  for(col in names(meta_factors)) {
+    if(!is.numeric(meta_factors[[col]])) {
+      meta_factors[[col]] <- as.factor(meta_factors[[col]])
+    }
+  }
+  
+  # Remove constant columns
+  keep_cols <- sapply(meta_factors, function(x) {
+    if(is.factor(x)) return(length(levels(x)) > 1)
+    return(TRUE)
+  })
+  meta_factors <- meta_factors[, keep_cols, drop = FALSE]
+  
+  if(ncol(meta_factors) < 2) {
+    stop("Not enough variables with variation for collinearity analysis")
+  }
+  
+  # Calculate correlation matrix using a different approach
+  # Convert all variables to numeric for correlation analysis
+  meta_numeric <- meta_factors
+  for(col in names(meta_numeric)) {
+    if(is.factor(meta_numeric[[col]])) {
+      meta_numeric[[col]] <- as.numeric(meta_numeric[[col]])
+    }
+  }
+  
+  # Remove any remaining non-numeric columns
+  meta_numeric <- meta_numeric[, sapply(meta_numeric, is.numeric)]
+  
+  if(ncol(meta_numeric) < 2) {
+    stop("Not enough numeric columns for correlation analysis")
+  }
+  
+  # Calculate correlation matrix
+  cor_matrix <- cor(meta_numeric, use = "complete.obs")
+  
+  cat("\n=== CORRELATION MATRIX (ORIGINAL VARIABLES) ===\n")
+  print(round(cor_matrix, 3))
+  
+  # Find all correlation pairs
+  cor_pairs <- which(upper.tri(cor_matrix), arr.ind = TRUE)
+  if(length(cor_pairs) > 0) {
+    all_cors <- data.frame(
+      Variable1 = rownames(cor_matrix)[cor_pairs[, 1]],
+      Variable2 = colnames(cor_matrix)[cor_pairs[, 2]],
+      Correlation = round(cor_matrix[cor_pairs], 3)
+    )
+    all_cors$Abs_Correlation <- abs(all_cors$Correlation)
+    all_cors <- all_cors[order(-all_cors$Abs_Correlation), ]
+    
+    cat("\n=== CORRELATION PAIRS (sorted by |r|) ===\n")
+    print(all_cors)
+  }
+  
+  # Calculate VIF using the original variable names
+  calculate_vif_original <- function(data) {
+    # Remove rows with missing values for VIF calculation
+    data_complete <- data[complete.cases(data), , drop = FALSE]
+    if(nrow(data_complete) < 2) return(NULL)
+    
+    # Create a dummy response variable
+    set.seed(123)
+    dummy_response <- rnorm(nrow(data_complete))
+    
+    # Build formula with original variables
+    predictor_vars <- colnames(data_complete)
+    formula_str <- paste("dummy_response ~", paste(predictor_vars, collapse = " + "))
+    
+    # Fit model and calculate VIF
+    lm_model <- lm(as.formula(formula_str), data = data_complete)
+    
+    # Use tryCatch for VIF calculation
+    vif_values <- tryCatch({
+      car::vif(lm_model)
+    }, error = function(e) {
+      # If VIF fails, use manual calculation
+      cat("VIF calculation warning:", e$message, "\n")
+      cat("Using manual VIF calculation...\n")
+      
+      # Manual VIF calculation: VIF = 1 / (1 - R^2)
+      vif_manual <- numeric(length(predictor_vars))
+      names(vif_manual) <- predictor_vars
+      
+      for(i in seq_along(predictor_vars)) {
+        current_var <- predictor_vars[i]
+        other_vars <- predictor_vars[-i]
+        
+        if(length(other_vars) > 0) {
+          formula_other <- paste(current_var, "~", paste(other_vars, collapse = " + "))
+          lm_other <- lm(as.formula(formula_other), data = data_complete)
+          r2 <- summary(lm_other)$r.squared
+          vif_manual[i] <- 1 / (1 - r2)
+        } else {
+          vif_manual[i] <- 1  # No other variables
+        }
+      }
+      return(vif_manual)
+    })
+    
+    return(vif_values)
+  }
+  
+  # Calculate VIF
+  vif_values <- calculate_vif_original(meta_numeric)
+  
+  if(!is.null(vif_values)) {
+    cat("\n=== VIF VALUES (ORIGINAL VARIABLES) ===\n")
+    print(vif_values)
+    
+    # Identify high VIF variables
+    high_vif <- names(vif_values)[vif_values > vif_threshold]
+    
+    if(length(high_vif) > 0) {
+      cat("\nVariables with high VIF (>", vif_threshold, "):", paste(high_vif, collapse = ", "), "\n")
+    } else {
+      cat("\nNo variables with high VIF found\n")
+    }
+    
+    return(list(
+      vif_values = vif_values,
+      high_vif_vars = high_vif,
+      cor_matrix = cor_matrix,
+      all_correlations = if(exists("all_cors")) all_cors else NULL,
+      remaining_vars = setdiff(vars, high_vif)
+    ))
+  } else {
+    cat("Could not calculate VIF values\n")
+    return(list(
+      vif_values = NULL,
+      high_vif_vars = NULL,
+      cor_matrix = cor_matrix,
+      all_correlations = if(exists("all_cors")) all_cors else NULL,
+      remaining_vars = vars
+    ))
+  }
+}
+```
+
+#refine PERMANOVA model pt.1
+```{r}
+refine_model_stepwise_one_at_a_time <- function(ps_obj, dist_method, metadata, current_vars, alpha = 0.05, max_iterations = 20) {
+  cat("=== STEPWISE REFINEMENT (ONE VARIABLE AT A TIME) ===\n")
+  
+  best_model <- NULL
+  best_vars <- current_vars
+  best_r2 <- 0
+  iteration <- 1
+  
+  while(iteration <= max_iterations && length(current_vars) > 1) {
+    # Run PERMANOVA with current variables
+    dist_matrix <- phyloseq::distance(ps_obj, method = dist_method)
+    formula <- as.formula(paste("dist_matrix ~(", paste(current_vars, collapse = "+"),")"))
+    current_model <- adonis2(formula, data = metadata, by = "terms")
+    
+    # Extract p-values and calculate total R2
+    p_values <- current_model$`Pr(>F)`[1:length(current_vars)]
+    names(p_values) <- current_vars
+    total_r2 <- sum(current_model$R2[1:length(current_vars)], na.rm = TRUE)
+    
+    # Check for significant variables
+    significant_vars <- names(p_values)[p_values < alpha & !is.na(p_values)]
+    
+    cat(sprintf("\nIteration %d: %d variables, R² = %.3f, %d significant\n",
+                iteration, length(current_vars), total_r2, length(significant_vars)))
+    cat("Variables:", paste(current_vars, collapse = ", "), "\n")
+    cat("P-values:", paste(round(p_values, 3), collapse = ", "), "\n")
+    
+    # Track best model (prioritizing models with significant variables)
+    if(length(significant_vars) > 0 && total_r2 > best_r2) {
+      best_model <- current_model
+      best_vars <- current_vars
+      best_r2 <- total_r2
+      cat("✓ New best model found!\n")
+    }
+    
+    # Stop if we have significant variables
+    if(length(significant_vars) > 0) {
+      cat("✓ Model contains significant variables - stopping refinement\n")
+      break
+    }
+    
+    # Remove ONLY the variable with the highest p-value
+    if(length(p_values) > 1) {
+      highest_p_var <- names(which.max(p_values))
+      current_vars <- setdiff(current_vars, highest_p_var)
+      cat("→ Removing", highest_p_var, "(p =", round(max(p_values, na.rm = TRUE), 3), ")\n")
+      cat("Remaining variables:", paste(current_vars, collapse = ", "), "\n")
+    } else {
+      break
+    }
+    
+    iteration <- iteration + 1
+  }
+  
+  # If we never found a model with significant variables, use the last model
+  if(is.null(best_model) && length(current_vars) > 0) {
+    dist_matrix <- phyloseq::distance(ps_obj, method = dist_method)
+    formula <- as.formula(paste("dist_matrix ~(", paste(current_vars, collapse = "+"),")"))
+    best_model <- adonis2(formula, data = metadata, by = "terms")
+    best_vars <- current_vars
+  }
+  
+  return(list(permanova_result = best_model, used_vars = best_vars))
+}
+
+# Updated corrected workflow
+corrected_workflow_one_at_a_time <- function(ps_obj, dist_method, metadata, formula_vars, vif_threshold = 5, alpha = 0.05) {
+  
+  # Step 1: Remove variables with high VIF (ONE TIME ONLY)
+  collinearity_results <- check_collinearity_fixed(metadata, formula_vars, vif_threshold)
+  remaining_after_vif <- collinearity_results$remaining_vars
+  
+  cat("=== AFTER VIF REMOVAL ===\n")
+  cat("Remaining variables:", paste(remaining_after_vif, collapse = ", "), "\n")
+  cat("Removed due to VIF >", vif_threshold, ":", paste(collinearity_results$high_vif_vars, collapse = ", "), "\n")
+  
+  # Step 2: Perform stepwise refinement (one variable at a time) on VIF-corrected variables
+  refined_results <- refine_model_stepwise_one_at_a_time(
+    ps_obj = ps_obj,
+    dist_method = dist_method,
+    metadata = metadata,
+    current_vars = remaining_after_vif,
+    alpha = alpha
+  )
+  
+  return(list(
+    permanova_result = refined_results$permanova_result,
+    used_vars = refined_results$used_vars,
+    vif_removed_vars = collinearity_results$high_vif_vars,
+    collinearity_info = collinearity_results
+  ))
+}
+```
+
+# 1st refinement PERMANOVA model launch
+```{r}
+# Run with one-at-a-time removal
+final_results <- corrected_workflow_one_at_a_time(
+  ps_obj = ps_obj,
+  dist_method = dist_method,
+  metadata = metadf,
+  formula_vars = formula_vars,
+  vif_threshold = 5,
+  alpha = 0.05
+)
+
+# Print final results
+cat("\n=== FINAL RESULTS ===\n")
+cat("Removed due to VIF:", paste(final_results$vif_removed_vars, collapse = ", "), "\n")
+cat("Final variables:", paste(final_results$used_vars, collapse = ", "), "\n")
+print(final_results$permanova_result)
+current_model_result <- final_results
+```
+
+# further improvements
+```{r}
+# Function to further refine model by removing insignificant variables while keeping significant ones
+refine_model_keep_significant <- function(ps_obj, dist_method, metadata, current_model_result, alpha = 0.05) {
+  
+  # Extract current variables and results
+  current_vars <- current_model_result$used_vars
+  current_permanova <- current_model_result$permanova_result
+  
+  cat("=== FURTHER REFINEMENT (KEEPING SIGNIFICANT VARIABLES) ===\n")
+  cat("Starting with variables:", paste(current_vars, collapse = ", "), "\n")
+  
+  # Extract p-values from current model
+  model_df <- as.data.frame(current_permanova)
+  p_values <- model_df$`Pr(>F)`[1:length(current_vars)]
+  names(p_values) <- current_vars
+  
+  # Identify significant variables
+  significant_vars <- names(p_values)[p_values < alpha & !is.na(p_values)]
+  insignificant_vars <- names(p_values)[p_values >= alpha | is.na(p_values)]
+  
+  cat("Significant variables:", paste(significant_vars, collapse = ", "), "\n")
+  cat("Insignificant variables:", paste(insignificant_vars, collapse = ", "), "\n")
+  
+  # If no significant variables, return original model
+  if(length(significant_vars) == 0) {
+    cat("No significant variables found - returning original model\n")
+    return(current_model_result)
+  }
+  
+  # Start with just the significant variables
+  refined_vars <- significant_vars
+  best_model <- NULL
+  best_vars <- refined_vars
+  best_r2 <- 0
+  
+  cat("\nStarting refinement with significant variables only...\n")
+  
+  # Try adding back insignificant variables one by one, if they improve the model
+  for(var in insignificant_vars) {
+    test_vars <- c(refined_vars, var)
+    
+    # Test if adding this variable improves the model
+    dist_matrix <- phyloseq::distance(ps_obj, method = dist_method)
+    formula <- as.formula(paste("dist_matrix ~(", paste(current_vars, collapse = "+"),")"))
+    test_model <- adonis2(formula, data = metadata, by = "terms")
+    
+    # Extract p-value for the added variable
+    test_p_values <- test_model$`Pr(>F)`[1:length(test_vars)]
+    names(test_p_values) <- test_vars
+    added_var_p <- test_p_values[var]
+    
+    # Calculate total R2
+    test_r2 <- sum(test_model$R2[1:length(test_vars)], na.rm = TRUE)
+    
+    # Check if the added variable is significant or doesn't harm the model too much
+    if(added_var_p < alpha * 2) {  # Liberal threshold for keeping variables
+      refined_vars <- c(refined_vars, var)
+      best_model <- test_model
+      best_vars <- refined_vars
+      best_r2 <- test_r2
+      cat("+ Keeping", var, "(p =", round(added_var_p, 3), ", R² =", round(test_r2, 3), ")\n")
+    } else {
+      cat("- Discarding", var, "(p =", round(added_var_p, 3), ")\n")
+    }
+  }
+  
+  # Final model with refined variables
+  if(is.null(best_model)) {
+    dist_matrix <- phyloseq::distance(ps_obj, method = dist_method)
+    formula <- as.formula(paste("dist_matrix ~", paste(refined_vars, collapse = "+")))
+    best_model <- adonis2(formula, data = metadata, by = "terms")
+    best_vars <- refined_vars
+  }
+  
+  return(list(
+    permanova_result = best_model,
+    used_vars = best_vars,
+    original_vars = current_vars,
+    significant_vars_kept = significant_vars,
+    insignificant_vars_removed = setdiff(current_vars, best_vars)
+  ))
+}
+```
+
+#aggressive removal of insignificant variables
+```{r}
+# More aggressive approach - remove all insignificant variables at once
+refine_model_aggressive <- function(ps_obj, dist_method, metadata, current_model_result, alpha = 0.05) {
+  
+  current_vars <- current_model_result$used_vars
+  current_permanova <- current_model_result$permanova_result
+  
+  cat("=== AGGRESSIVE REFINEMENT ===\n")
+  cat("Starting variables:", paste(current_vars, collapse = ", "), "\n")
+  
+  # Extract p-values
+  model_df <- as.data.frame(current_permanova)
+  p_values <- model_df$`Pr(>F)`[1:length(current_vars)]
+  names(p_values) <- current_vars
+  
+  # Keep only significant variables
+  significant_vars <- names(p_values)[p_values < alpha & !is.na(p_values)]
+  
+  cat("Keeping only significant variables:", paste(significant_vars, collapse = ", "), "\n")
+  
+  # If no significant variables, keep the 2-3 most significant ones
+  if(length(significant_vars) == 0) {
+    cat("No significant variables at alpha =", alpha, "- keeping most promising variables\n")
+    # Sort by p-value and keep the top 2-3
+    sorted_vars <- names(sort(p_values))[1:min(3, length(p_values))]
+    significant_vars <- sorted_vars
+    cat("Keeping:", paste(significant_vars, collapse = ", "), "\n")
+  }
+  
+  # Fit final model
+  dist_matrix <- phyloseq::distance(ps_obj, method = dist_method)
+  formula <- as.formula(paste("dist_matrix ~", paste(significant_vars, collapse = "+")))
+  final_model <- adonis2(formula, data = metadata, by = "terms")
+  
+  return(list(
+    permanova_result = final_model,
+    used_vars = significant_vars,
+    original_vars = current_vars,
+    removed_vars = setdiff(current_vars, significant_vars)
+  ))
+}
+```
+
+# run model improvement
+```{r}
+# Assuming you have your current results from the previous step
+# current_results <- corrected_workflow_one_at_a_time(...)
+
+# Option 1: Conservative refinement (tries to keep variables that help)
+refined_results <- refine_model_keep_significant(
+  ps_obj = ps_obj,
+  dist_method = dist_method,
+  metadata = metadf,
+  current_model_result = current_model_result,  # Your current results object
+  alpha = 0.05
+)
+
+# Option 2: Aggressive refinement (removes all insignificant)
+aggressive_results <- refine_model_aggressive(
+  ps_obj = ps_obj,
+  dist_method = dist_method,
+  metadata = metadf,
+  current_model_result = current_model_result,
+  alpha = 0.05
+)
+
+# Compare the results
+cat("\n=== COMPARISON ===\n")
+cat("Original variables:", paste(current_model_result$used_vars, collapse = ", "), "\n")
+cat("Conservative refinement:", paste(refined_results$used_vars, collapse = ", "), "\n")
+cat("Aggressive refinement:", paste(aggressive_results$used_vars, collapse = ", "), "\n")
+
+# Print the refined models
+cat("\n=== CONSERVATIVE MODEL ===\n")
+print(refined_results$permanova_result)
+
+cat("\n=== AGGRESSIVE MODEL ===\n")
+print(aggressive_results$permanova_result)
+```
+
+
+
+# stepwise advancement of the last model
+```{r}
+# Continue stepwise refinement from current model
+continue_stepwise_refinement <- function(ps_obj, dist_method, metadata, current_model_result, alpha = 0.05) {
+  
+  current_vars <- current_model_result$used_vars
+  cat("=== CONTINUING STEPWISE REFINEMENT ===\n")
+  cat("Current variables:", paste(current_vars, collapse = ", "), "\n")
+  
+  # Use the same one-at-a-time function but start from current variables
+  refined_results <- refine_model_stepwise_one_at_a_time(
+    ps_obj = ps_obj,
+    dist_method = dist_method,
+    metadata = metadata,
+    current_vars = current_vars,
+    alpha = alpha
+  )
+  
+  return(list(
+    permanova_result = refined_results$permanova_result,
+    used_vars = refined_results$used_vars,
+    original_vars = current_vars
+  ))
+}
+
+# Use this to continue refinement
+continued_results <- continue_stepwise_refinement(
+  ps_obj = ps_obj,
+  dist_method = dist_method,
+  metadata = metadf,
+  current_model_result = current_model_result,
+  alpha = 0.05
+)
+```
+
+#complete workflow
+```{r}
+# Step 1: Clone your current results
+current_results <- final_results
+
+# Step 2: Print what we're starting with
+cat("=== STARTING POINT FOR FURTHER REFINEMENT ===\n")
+cat("Current variables:", paste(current_results$used_vars, collapse = ", "), "\n")
+cat("Variables removed due to VIF:", paste(current_results$vif_removed_vars, collapse = ", "), "\n")
+
+# Step 3: Try different refinement approaches
+# Option A: Conservative refinement (recommended first)
+conservative_results <- refine_model_keep_significant(
+  ps_obj = ps_obj,
+  dist_method = dist_method,
+  metadata = metadf,
+  current_model_result = current_results,
+  alpha = 0.05
+)
+
+# Option B: Aggressive refinement
+aggressive_results <- refine_model_aggressive(
+  ps_obj = ps_obj,
+  dist_method = dist_method,
+  metadata = metadf,
+  current_model_result = current_results,
+  alpha = 0.05
+)
+
+# Option C: Continue stepwise refinement
+continued_results <- continue_stepwise_refinement(
+  ps_obj = ps_obj,
+  dist_method = dist_method,
+  metadata = metadf,
+  current_model_result = current_results,
+  alpha = 0.05
+)
+
+# Step 4: Compare all approaches
+cat("\n=== COMPARISON OF ALL APPROACHES ===\n")
+approaches <- list(
+  "Current" = current_results,
+  "Conservative" = conservative_results,
+  "Aggressive" = aggressive_results,
+  "Continued" = continued_results
+)
+
+comparison_table <- data.frame(
+  Approach = names(approaches),
+  Variables = sapply(approaches, function(x) paste(x$used_vars, collapse = ", ")),
+  Num_Variables = sapply(approaches, function(x) length(x$used_vars)),
+  Total_R2 = sapply(approaches, function(x) {
+    sum(x$permanova_result$R2[1:length(x$used_vars)], na.rm = TRUE)
+  }),
+  Significant_Vars = sapply(approaches, function(x) {
+    p_vals <- x$permanova_result$`Pr(>F)`[1:length(x$used_vars)]
+    sum(p_vals < 0.05 & !is.na(p_vals))
+  })
+)
+
+print(comparison_table)
+
+# Step 5: Detailed analysis of each approach
+for(approach_name in names(approaches)) {
+  approach <- approaches[[approach_name]]
+  cat(sprintf("\n=== %s APPROACH ===\n", toupper(approach_name)))
+  cat("Variables:", paste(approach$used_vars, collapse = ", "), "\n")
+  print(approach$permanova_result)
+}
+```
