@@ -9,13 +9,13 @@ library(tidyr)
 
 # metadata
 ```{r}
-ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
-#ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_dups_samples_batch_check_all_physeq_wgs.rds')
-#ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_RESEQUENCING_wgs.rds')
+ps <- readRDS('/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
+#ps <- readRDS('/RSF_res_4_ps/RSF_dups_samples_batch_check_all_physeq_wgs.rds')
+#ps <- readRDS('/RSF_res_4_ps/RSF_RESEQUENCING_wgs.rds')
 #ps@sam_data$Age = as.numeric(ps@sam_data$Age)
 #ps@sam_data$Weight <- as.numeric(ps@sam_data$Weight)
 #ps@sam_data$Height <- as.numeric(ps@sam_data$Height)
-#saveRDS(ps, '/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
+#saveRDS(ps, '/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
 #meta <- read_csv('metadata_eng_prepared.csv')
 
 bad_batch_samples <- c("AO-203-2", "AO-207-1", "B-022-2", "MB124-2")
