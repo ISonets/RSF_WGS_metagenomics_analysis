@@ -10,7 +10,7 @@ library(gtable)
 # load data and transform
 ```{r}
 #Read phyloseq
-ps <-  readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
+ps <-  readRDS('/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v3.rds')
 ps_obj <- ps
 
 
@@ -117,7 +117,7 @@ clustering_distance_cols <- 'euclidean'
 # clustering_distance_cols <- 'binary'
 # clustering_distance_cols <- 'correlation'
 
-save_path <- '/home/sonec_iv/'
+save_path <- '/'
 filename <- paste0(save_path, 'RSF_WGS_MOD3_tax_glom_level_', tax_glom_level, '_transform_', transformation, '_det', detection, '_prev',prevalence,  '_clust_dist_cols_', clustering_distance_cols,  '_clust_dist_rows_', clustering_distance_rows, '.pdf')
 ```
 
