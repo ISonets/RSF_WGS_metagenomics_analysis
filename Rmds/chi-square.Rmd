@@ -10,9 +10,9 @@ library(dplyr)
 
 # load data
 ```{r}
-ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
+ps <- readRDS('./RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v3.rds')
 ps
-bad_batch_samples <- c("AO-203-2", "AO-207-1", "B-022-2", "MB124-2")
+bad_batch_samples <- c('B-024-1', 'B-024-2', 'B-027-2','B-027-1','B-030-1', 'B-030-2')
 
 if (length(bad_batch_samples) > 0) {
   ps <- prune_samples(!(sample_names(ps) %in% bad_batch_samples), ps)
