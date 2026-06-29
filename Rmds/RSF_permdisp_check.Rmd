@@ -7,9 +7,8 @@ library(phyloseq)
 #code
 ```{r}
 # Reqd phyloseq
-#ps <-  readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_ps_mags.rds')
-#ps <-  readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
-ps <-  readRDS('/home/sonec_iv/RSF_res_4_ps/hm3/RSF_ps_humann_joint.rds')
+#ps <-  readRDS('RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v3.rds')
+ps <-  readRDS('/RSF_res_4_ps/hm3/RSF_ps_humann_joint.rds')
 ps <- prune_samples(sample_sums(ps) > 10, ps)
 otu_table <- as.data.frame(otu_table(ps))  # Samples as rows
 
@@ -69,7 +68,7 @@ for (var in cols_to_keep) {
   print(perm_test)
 
   # Plot with adjusted margins and labels
-  png(paste0("/home/sonec_iv/RSF_permanovas/permdisp/permdisp_PATHS_v2/PERMDISP_", var, ".png"), width = 1200, height = 600)
+  png(paste0("/RSF_permanovas/permdisp/permdisp_PATHS_v2/PERMDISP_", var, ".png"), width = 1200, height = 600)
   par(mfrow = c(1, 2), mar = c(8, 5, 4, 2))  # Larger bottom margin (8)
   
   # Boxplot: Rotated (90°) and smaller group labels
