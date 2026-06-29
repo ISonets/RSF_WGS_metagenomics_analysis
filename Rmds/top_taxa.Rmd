@@ -27,833 +27,118 @@ taxas <- core_members(ps, detection = det, prevalence = prev, include.lowest = F
 ps <- prune_taxa(taxas, ps)
 ps <- speedyseq::tax_glom(ps, taxrank = level, NArm = TRUE)
 ```
-
-# plots
 ```{r}
-# Define severity groups and taxonomic ranks
-group_col <- "Batch"
-#ranks <- c("Family", "Genus", "Species")
-ranks <- c("Family")
-
-# Generate and save plots for each taxonomic rank
-for (rank in ranks) {
-  ps_agg <- tax_glom(ps_obj, rank, NArm = TRUE)
-  
-  # Get top taxa
-  top_taxa <- names(sort(taxa_sums(ps_agg), decreasing = TRUE)[1:30])
-  ps_top <- prune_taxa(top_taxa, ps_agg)
-  # Create plot for this rank
-  p_list <- comp_barplot(
-    ps_top,
-    tax_level = rank,
-    n_taxa = 30,
-    group_by = group_col,
-    merge_other = TRUE,
-    sample_order = "aitchison",
-    bar_outline_colour = NA,
-    bar_width = 0.9
-  )
-  
-  # Create a unified theme for all elements
-  unified_theme <- theme(
-    # Grid lines
-    panel.grid.major = element_line(color = "gray90", size = 0.1),
-    panel.grid.minor = element_blank(),
-    
-    # Titles and text
-    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
-    axis.title = element_text(size = 12, face = "bold"),
-    axis.text = element_text(size = 10),
-    
-    # Legend
-    legend.title = element_text(size = 12, face = "bold"),
-    legend.text = element_text(size = 10),
-    legend.key.size = unit(0.5, "cm")
-  )
-  
-  # Apply unified theme to each plot
-  p_list <- lapply(p_list, function(p) {
-    p + 
-      unified_theme
-  })
-  
-  # Add grid to each plot in the list
-  p_list <- lapply(p_list, function(p) {
-    p + theme(
-      panel.grid.major = element_line(color = "gray90", size = 0.1),
-      panel.grid.minor = element_blank()
-    )
-  })
-  
-  # Combine the group plots horizontally with shared legend
-  combined_plot <- wrap_plots(p_list, ncol = length(p_list), guides = "collect") + 
-    plot_annotation(title = paste("Top taxons at", rank, "level")) +
-    theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 14))
-  combined_plot <-  combined_plot & coord_flip()
-  # Save the plot
-  ggsave(paste0("batch_counts_top_30_", tolower(rank), "_RESEQ.png"), 
-         combined_plot, 
-         width = 28, height = 20, dpi = 300)
-  
-  # Print the plot
-  print(combined_plot)
-}
-```
-# microviz v3
-```{r}
-# Define severity groups and taxonomic ranks
+# ----------------------------------------------------------------------
+# 1. Define groups and remove bad samples
+# ----------------------------------------------------------------------
 group_col <- "Batch"
 ranks <- c("Family")
 
-# Generate and save plots for each taxonomic rank
-for (rank in ranks) {
-  ps_agg <- tax_glom(ps_obj, rank, NArm = TRUE)
-  
-  # Get top taxa
-  top_taxa <- names(sort(taxa_sums(ps_agg), decreasing = TRUE)[1:30])
-  ps_top <- prune_taxa(top_taxa, ps_agg)
-  # Create plot for this rank
-  p_list <- comp_barplot(
-    ps_top,
-    tax_level = rank,
-    n_taxa = 30,
-    group_by = group_col,
-    merge_other = TRUE,
-    sample_order = "aitchison",
-    bar_outline_colour = NA,
-    bar_width = 0.9
-  )
-  
-  # Create a unified theme for all elements
-  unified_theme <- theme(
-    # Grid lines
-    panel.grid.major = element_line(color = "gray90", size = 0.1),
-    panel.grid.minor = element_blank(),
-    
-    # Titles and text
-    plot.title = element_text(face = "bold", size = 24, hjust = 0.5),
-    axis.title = element_text(size = 16, face = "bold"),
-    axis.text.x = element_text(size = 16),
-    axis.text.y = element_text(size=24),
-    
-    # Legend
-    legend.title = element_text(size = 12, face = "bold"),
-    legend.text = element_text(size = 10),
-    legend.key.size = unit(0.5, "cm")
-  )
-  
-  # Apply unified theme to each plot
-  p_list <- lapply(p_list, function(p) {
-    p + 
-      unified_theme
-  })
-  
-  # Add grid to each plot in the list
-  p_list <- lapply(p_list, function(p) {
-    p + theme(
-      panel.grid.major = element_line(color = "gray90", size = 0.1),
-      panel.grid.minor = element_blank()
-    )
-  })
-  
-  # Combine the group plots horizontally with shared legend
-  combined_plot <- wrap_plots(p_list, ncol = length(p_list), guides = "collect") + 
-    plot_annotation(title = paste("Top taxons at", rank, "level")) +
-    theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 24))
-  combined_plot <-  combined_plot & coord_flip()
-  
-  # THE FIX: Add this ONE LINE to make legend 1 column and size 24
-  combined_plot <- combined_plot & guides(fill = guide_legend(ncol = 1, 
-                                                             title.theme = element_text(size = 34, face = "bold"),
-                                                             label.theme = element_text(size = 34)))
-  
-  # Save the plot
-  ggsave(paste0("/BATCH_counts_top_30_", tolower(rank), "_v4_BIGFIONT.png"), combined_plot,  width = 28, height = 20, dpi = 300)
-  
-  # Print the plot
-  print(combined_plot)
-}
-```
-# separate top taxa plots for each Timepoint
-```{r}
-# Define severity groups, taxonomic ranks, and timepoints
-group_col <- "Group"
-ranks <- c("Family")
-timepoints <- c(-1, -2)
-
-# Loop over timepoints
-for (tp in timepoints) {
-  
-  # Filter phyloseq object for current timepoint
-  ps_tp <- subset_samples(ps_obj, Timepoint == tp)
-  n_samples <- nsamples(ps_tp)  # get sample count
-  
-  # Generate and save plots for each taxonomic rank
-  for (rank in ranks) {
-    ps_agg <- tax_glom(ps_tp, rank, NArm = TRUE)
-    
-    # Get top taxa
-    top_taxa <- names(sort(taxa_sums(ps_agg), decreasing = TRUE)[1:30])
-    ps_top <- prune_taxa(top_taxa, ps_agg)
-    
-    # Create plot for this rank
-    p_list <- comp_barplot(
-      ps_top,
-      tax_level = rank,
-      n_taxa = 30,
-      group_by = group_col,
-      merge_other = TRUE,
-      sample_order = "aitchison",
-      bar_outline_colour = NA,
-      bar_width = 0.9
-    )
-    
-    # Create a unified theme for all elements
-    unified_theme <- theme(
-      panel.grid.major = element_line(color = "gray90", size = 0.1),
-      panel.grid.minor = element_blank(),
-      plot.title = element_text(face = "bold", size = 24, hjust = 0.5),
-      axis.title = element_text(size = 16, face = "bold"),
-      axis.text = element_text(size = 12),
-      legend.title = element_text(size = 12, face = "bold"),
-      legend.text = element_text(size = 10),
-      legend.key.size = unit(0.5, "cm")
-    )
-    
-    # Apply unified theme to each plot
-    p_list <- lapply(p_list, function(p) {
-      p + unified_theme
-    })
-    
-    # Add grid to each plot in the list
-    p_list <- lapply(p_list, function(p) {
-      p + theme(
-        panel.grid.major = element_line(color = "gray90", size = 0.1),
-        panel.grid.minor = element_blank()
-      )
-    })
-    
-    # Combine the group plots horizontally with shared legend
-    combined_plot <- wrap_plots(p_list, ncol = length(p_list), guides = "collect") + 
-      plot_annotation(title = paste("Top taxa at", rank, "level - Timepoint", tp, "(n =", n_samples, ")")) +
-      theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 4))
-    combined_plot <-  combined_plot & coord_flip()
-    
-    # Make legend one column with larger text
-    combined_plot <- combined_plot & guides(fill = guide_legend(ncol = 1, 
-                                                               title.theme = element_text(size = 44, face = "bold"),
-                                                               label.theme = element_text(size = 44)))
-    
-    # Save the plot (optional – uncomment and adjust path as needed)
-    ggsave(paste0("counts_top_30_", tolower(rank), "_tp", tp, "BIGFONT_.png"), 
-            combined_plot, 
-            width = 28, height = 20, dpi = 300)
-    
-    # Print the plot
-    print(combined_plot)
-  }
-}
-```
-
-#timepoint shared legend color
-```{r}
-# Load libraries
-library(phyloseq)
-library(microViz)
-library(patchwork)
-library(ggplot2)
-#ps <- readRDS('/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v3.rds')
-
-bad_batch_samples <- c("AO-203-2", "AO-207-1", "B-022-2", "MB124-2")
+bad_batch_samples <- c('B-024-1', 'B-024-2', 'B-027-2', 'B-030-2')
 
 if (length(bad_batch_samples) > 0) {
   ps_obj <- prune_samples(!(sample_names(ps) %in% bad_batch_samples), ps)
   cat("Removed", length(bad_batch_samples), "samples\n")
 }
 
-group_col <- "Group"
-ranks <- c("Family")
-timepoints <- c(-1, -2)
-
-# ---- Step 1: Store all plots and collect fill levels ----
-all_plots <- list()
-all_fill_levels <- c()
-
-for (tp in timepoints) {
-  ps_tp <- subset_samples(ps_obj, Timepoint == tp)
-  n_samples <- nsamples(ps_tp)
-  
-  for (rank in ranks) {
-    ps_agg <- tax_glom(ps_tp, rank, NArm = TRUE)
-    top_taxa <- names(sort(taxa_sums(ps_agg), decreasing = TRUE)[1:30])
-    ps_top <- prune_taxa(top_taxa, ps_agg)
-    
-    p_list <- comp_barplot(
-      ps_top,
-      tax_level = rank,
-      n_taxa = 30,
-      group_by = group_col,
-      merge_other = TRUE,
-      sample_order = "aitchison",
-      bar_outline_colour = NA,
-      bar_width = 0.9
-    )
-    
-    unified_theme <- theme(
-      panel.grid.major = element_line(color = "gray90", size = 0.1),
-      panel.grid.minor = element_blank(),
-      plot.title = element_text(face = "bold", size = 24, hjust = 0.5),
-      axis.title = element_text(size = 16, face = "bold"),
-      axis.text = element_text(size = 12),
-      legend.title = element_text(size = 12, face = "bold"),
-      legend.text = element_text(size = 10),
-      legend.key.size = unit(0.5, "cm")
-    )
-    p_list <- lapply(p_list, function(p) p + unified_theme)
-    
-    all_plots[[paste0("tp", tp)]] <- p_list
-    
-    # Extract fill levels from the first plot of this group
-    fill_levels <- levels(p_list[[1]]$data[[rank]])
-    all_fill_levels <- union(all_fill_levels, fill_levels)
-  }
+# ----------------------------------------------------------------------
+# 2. Function to create a distinct colour palette
+# ----------------------------------------------------------------------
+create_distinct_palette <- function(fill_levels) {
+  n <- length(fill_levels)
+  hues <- seq(0, 360, length.out = n + 1)[1:n]
+  brightness <- rep(c(0.9, 0.6, 0.8, 0.5, 0.7), length.out = n)
+  cols <- hsv(h = hues / 360, s = 1, v = brightness)
+  names(cols) <- fill_levels
+  return(cols)
 }
 
-# ---- Step 2: Create maximally distinct colors ----
-all_fill_levels <- sort(all_fill_levels)
-n_col <- length(all_fill_levels)
-cat("Number of unique fill levels (taxa + 'Other'):", n_col, "\n")
-
-# Generate colors: full hue circle, max saturation, alternating brightness
-hues <- seq(0, 360, length.out = n_col + 1)[1:n_col]  # evenly spaced hues
-brightness <- rep(c(0.9, 0.6, 0.8, 0.5, 0.7), length.out = n_col)  # alternate light/dark
-colors <- hsv(h = hues/360, s = 1, v = brightness)
-names(colors) <- all_fill_levels
-
-# Optional: preview colors
-# scales::show_col(colors, ncol = 10)
-
-cat("Number of colors generated:", length(colors), "\n")
-
-# ---- Step 3: Re-apply color scale to every plot and save ----
-for (tp in timepoints) {
-  p_list <- all_plots[[paste0("tp", tp)]]
-  n_samples <- nsamples(subset_samples(ps_obj, Timepoint == tp))
-  rank <- ranks[1]
-  
-  # Apply manual fill scale; suppress warnings about replacing existing scale
-  p_list <- lapply(p_list, function(p) {
-    suppressWarnings(
-      p + scale_fill_manual(values = colors, drop = FALSE, name = rank)
-    )
-  })
-  
-  p_list <- lapply(p_list, function(p) {
-    p + theme(panel.grid.major = element_line(color = "gray90", size = 0.1),
-              panel.grid.minor = element_blank())
-  })
-  
-  combined_plot <- wrap_plots(p_list, ncol = length(p_list), guides = "collect") + 
-    plot_annotation(title = paste("Top taxa at", rank, "level - Timepoint", tp, "(n =", n_samples, ")")) +
-    theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 24))
-  combined_plot <- combined_plot & coord_flip()
-  
-  combined_plot <- combined_plot & guides(fill = guide_legend(
-    ncol = 1,
-    title.theme = element_text(size = 44, face = "bold"),
-    label.theme = element_text(size = 44)
-  ))
-  
-  ggsave(paste0("counts_top_30_", tolower(rank), "_tp", tp, "_BIGFONT.png"), 
-         combined_plot, width = 28, height = 20, dpi = 300)
-  print(combined_plot)
-}
-```
-
-
-# plots with ggplot2 (alt method if microViz shits its pants)
-```{r}
+# ----------------------------------------------------------------------
+# 3. Loop over taxonomic ranks
+# ----------------------------------------------------------------------
 for (rank in ranks) {
-  # Aggregate at specified rank
   ps_agg <- tax_glom(ps_obj, rank, NArm = TRUE)
-  
-  # Get top taxa
   top_taxa <- names(sort(taxa_sums(ps_agg), decreasing = TRUE)[1:30])
   ps_top <- prune_taxa(top_taxa, ps_agg)
   
-  # Melt for plotting
-  melted <- psmelt(ps_top)
+  # Create barplot list (each element is a ggplot)
+  p_list <- comp_barplot(
+    ps_top,
+    tax_level = rank,
+    n_taxa = 30,
+    group_by = group_col,
+    merge_other = TRUE,
+    sample_order = "aitchison",
+    bar_outline_colour = NA,
+    bar_width = 0.9
+  )
   
-  # Create plot
-  p <- ggplot(melted, aes(y = Abundance, x = Sample, fill = get(rank))) +
-    geom_bar(stat = "identity", position = "fill") +
-    facet_wrap(~ get(group_col), scales = "free_x") +
-    labs(fill = rank, title = paste("Top taxons at", rank, "level")) +
-    theme_minimal() +
-    theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8))
-  p 
-  print(p)
-  ggsave(paste0("counts_ggplot2_top_30_", tolower(rank), "_by_severity.png"), 
-         p, width = 28, height = 14, dpi = 300)
-}
-```
-
-# rarefaction curves with vegan
-```{r}
-ps_obj <- ps
-ps_obj.prune = prune_taxa(taxa_sums(ps_obj) > 10, ps_obj)
-readcount = data.table(as(sample_data(ps_obj.prune), "data.frame"),
-                 TotalReads = sample_sums(ps_obj.prune), 
-                 keep.rownames = TRUE)
-#readcount <- readcount %>% 
-  #filter(Timepoint == '-1')
-#setnames(readcount, "rn", "SampleID")
-ggplot(readcount, aes(TotalReads)) + geom_histogram() + ggtitle("Sequencing Depth")
-
-
-
-head(readcount[order(readcount$TotalReads), c("SampleID", "TotalReads")])
-otu.table <- as.data.frame(t(otu_table(ps_obj.prune)))
-
-r1 <- rarecurve(otu.table, step = 5000000, label = TRUE)
-# Create rarefaction plot with colors
-#r1 <- rarecurve(otu.table, step = 1000, label = FALSE)
-
-# Get group information
-sample_meta <- data.frame(sample_data(ps_obj.prune))
-groups <- sample_meta$Group
-group_colors <- c("A" = "red", "B" = "blue", "C" = "green")
-
-# Create color vector for samples
-sample_colors <- group_colors[as.character(groups)]
-
-# Plot with colors
-par(mar = c(5, 5, 4, 8), xpd = TRUE)  # Adjust margins for legend
-rarecurve(otu.table, step = 5000000, col = sample_colors, lwd = 2,
-          xlab = "Number of Reads", ylab = "Number of Species",
-          main = "Rarefaction Curves by Group")
-
-# Add legend
-#legend("topright", inset = c(-0.2, 0), 
-     #  legend = names(group_colors), 
-     #  col = group_colors, 
-     #  lwd = 2, 
-     #  title = "Group")
-
-# Check current read depths
-sample_sums(ps_obj)
-
-# Rarefy to minimum depth
-#physeq_rarefied <- rarefy_even_depth(ps_obj, 
-                                    # rngseed = 42, 
-                                   #  replace = FALSE)
-
-# Or rarefy to specific depth (e.g., 10,000)
-#physeq_rarefied <- rarefy_even_depth(ps_obj, 
-                                    # sample.size = 500000,
-                                    # rngseed = 42)
-```
-
-#rarefaction but fancier
-```{r}
-library(phyloseq)
-library(vegan)
-library(ggplot2)
-library(dplyr)
-library(data.table)
-
-ps_obj <- ps
-ps_obj.prune = prune_taxa(taxa_sums(ps_obj) > 1, ps_obj)
-#ps_obj.filtered = subset_samples(ps_obj.prune, Timepoint == '-1')
-
-# Get OTU table for filtered data
-otu.table <- as.data.frame(t(otu_table(ps_obj.prune)))
-
-# Check if otu.table contains integers
-print(str(otu.table[1:5, 1:5]))
-
-# Run rarefaction with a smaller step size
-r1 <- rarecurve(otu.table, step = 1000000, label = FALSE)
-
-# Check the structure of r1
-print(class(r1))
-print(length(r1))
-print(names(r1)[1:5])
-
-# Check the structure of the first element
-print(class(r1[[1]]))
-print(dim(r1[[1]]))
-print(head(r1[[1]]))
-
-# Check if it's a vector or matrix
-if(is.vector(r1[[1]])) {
-  print("It's a vector")
-  print(length(r1[[1]]))
-  print(names(r1[[1]]))
-} else if(is.matrix(r1[[1]])) {
-  print("It's a matrix")
-  print(dim(r1[[1]]))
-  print(colnames(r1[[1]]))
-}
-```
-
-# rareify pt3
-```{r}
-library(phyloseq)
-library(vegan)
-library(ggplot2)
-library(dplyr)
-library(ggrepel)  # For better label placement
-
-ps_obj <- ps
-ps_obj.filtered = prune_taxa(taxa_sums(ps_obj) > 10, ps_obj)
-#ps_obj.filtered = subset_samples(ps_obj.prune, Timepoint == '-1')
-
-# Get OTU table and sample names
-otu.table <- as.data.frame(t(otu_table(ps_obj.filtered)))
-sample_names <- rownames(otu.table)
-
-# Run rarefaction
-r1 <- rarecurve(otu.table, step = 5000000, label = FALSE)
-
-# Extract data with sample names
-rare_data <- data.frame()
-
-for(i in seq_along(r1)) {
-  if(length(r1[[i]]) > 0) {
-    sample_name <- sample_names[i]
-    curve_data <- r1[[i]]
-    
-    temp_df <- data.frame(
-      Sample = sample_name,
-      Reads = as.numeric(gsub("N", "", names(curve_data))),
-      Species = as.numeric(curve_data)
+  # ---- Extract the actual fill levels from the first plot ----
+  # This ensures we get the exact names used in the plot (e.g., "Other" or "other")
+  first_plot_data <- p_list[[1]]$data
+  # The fill aesthetic is mapped to the column named by 'rank' (e.g., "Family")
+  fill_levels <- unique(first_plot_data[[rank]])
+  # If "Other" is present, it will be included; if not, it's fine.
+  # Sort to have a consistent order (optional)
+  fill_levels <- sort(fill_levels)
+  
+  cat("Fill levels for this rank:", paste(fill_levels, collapse = ", "), "\n")
+  
+  # Generate colours for these exact levels
+  my_colors <- create_distinct_palette(fill_levels)
+  
+  # ---- Unified theme ----
+  unified_theme <- theme(
+    panel.grid.major = element_line(color = "gray90", size = 0.1),
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold", size = 36, hjust = 0.5),
+    axis.title = element_text(size = 28, face = "bold"),
+    axis.text.x = element_text(size = 28),
+    axis.text.y = element_text(size = 28),
+    legend.title = element_text(size = 18, face = "bold"),
+    legend.text = element_text(size = 18),
+    legend.key.size = unit(0.5, "cm")
+  )
+  
+  # Apply the theme to each plot (no fill scale yet)
+  p_list <- lapply(p_list, function(p) {
+    p + unified_theme
+  })
+  
+  # ---- Combine plots ----
+  combined_plot <- wrap_plots(p_list, ncol = length(p_list), guides = "collect") +
+    theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 36))
+  
+  # Flip coordinates and add legend customisation
+  combined_plot <- combined_plot & coord_flip()
+  combined_plot <- combined_plot & guides(
+    fill = guide_legend(
+      ncol = 1,
+      title.theme = element_text(size = 36, face = "bold"),
+      label.theme = element_text(size = 36)
     )
-    
-    rare_data <- rbind(rare_data, temp_df)
-  }
-}
-
-# Get metadata
-sample_meta <- data.frame(sample_data(ps_obj.filtered))
-sample_meta$Sample <- rownames(sample_meta)
-rare_data <- left_join(rare_data, sample_meta[, c("Sample", "Group")], by = "Sample")
-
-# Define colors
-group_colors <- c("A" = "#E41A1C", "B" = "#377EB8", "C" = "#4DAF4A")
-
-# OPTION 1: Label ALL samples (might be crowded with 204 samples)
-# Get the endpoint of each curve for labeling
-end_points <- rare_data %>%
-  group_by(Sample) %>%
-  filter(Reads == max(Reads)) %>%
-  ungroup()
-
-p1 <- ggplot(rare_data, aes(x = Reads, y = Species, group = Sample, color = Group)) +
-  geom_line(linewidth = 0.7, alpha = 0.7) +
-  geom_text_repel(data = end_points, 
-                  aes(label = Sample),
-                  size = 2.5,
-                  max.overlaps = 200,  # Increase if you want more labels visible
-                  segment.size = 0.2,
-                  box.padding = 0.5,
-                  show.legend = FALSE) +
-  scale_color_manual(values = group_colors, na.value = "gray50") +
-  labs(
-    title = "Rarefaction Curves with Sample Labels",
-    x = "Number of Reads",
-    y = "Number of OTUs"
-  ) +
-  theme_minimal()
-
-print(p1)
-
-# OPTION 2: Label only a subset of samples (e.g., one per group, or extreme values)
-# Label the sample with highest species richness in each group
-top_samples <- rare_data %>%
-  group_by(Sample, Group) %>%
-  summarise(Max_Species = max(Species), .groups = 'drop') %>%
-  group_by(Group) %>%
-  slice_max(Max_Species, n = 5) %>%  # Top 2 samples from each group
-  ungroup()
-
-# Filter endpoint data for these samples
-end_points_subset <- end_points %>%
-  filter(Sample %in% top_samples$Sample)
-
-p2 <- ggplot(rare_data, aes(x = Reads, y = Species, group = Sample, color = Group)) +
-  geom_line(linewidth = 0.7, alpha = 0.7) +
-  geom_label_repel(data = end_points_subset,
-                   aes(label = Sample),
-                   size = 3,
-                   fill = "white",
-                   alpha = 0.8,
-                   box.padding = 0.5,
-                   show.legend = FALSE) +
-  scale_color_manual(values = group_colors, na.value = "gray50") +
-  labs(
-    title = "Rarefaction Curves (Labeled: Top Samples per Group)",
-    x = "Number of Reads",
-    y = "Number of OTUs"
-  ) +
-  theme_minimal()
-
-print(p2)
-
-# OPTION 3: Interactive plot with plotly (hover to see sample names)
-# install.packages("plotly")
-library(plotly)
-
-p3 <- ggplot(rare_data, aes(x = Reads, y = Species, group = Sample, color = Group,
-                            text = paste("Sample:", Sample, 
-                                         "<br>Group:", Group,
-                                         "<br>Reads:", Reads,
-                                         "<br>OTUs:", round(Species, 0)))) +
-  geom_line(linewidth = 0.7, alpha = 0.7) +
-  scale_color_manual(values = group_colors, na.value = "gray50") +
-  labs(
-    title = "Rarefaction Curves (Hover for Sample Details)",
-    x = "Number of Reads",
-    y = "Number of OTUs"
-  ) +
-  theme_minimal()
-
-# Convert to interactive plot
-ggplotly(p3, tooltip = "text")
-
-# OPTION 4: Facet by group with a few labeled samples
-# Get the sample with median richness in each group for labeling
-median_samples <- rare_data %>%
-  group_by(Sample, Group) %>%
-  summarise(Max_Species = max(Species), .groups = 'drop') %>%
-  group_by(Group) %>%
-  mutate(Rank = rank(-Max_Species)) %>%
-  filter(Rank == 3) %>%  # Label the 3rd highest in each group
-  ungroup()
-
-end_points_median <- end_points %>%
-  filter(Sample %in% median_samples$Sample)
-
-p4 <- ggplot(rare_data, aes(x = Reads, y = Species, group = Sample, color = Group)) +
-  geom_line(linewidth = 0.5, alpha = 0.5) +
-  geom_label(data = end_points_median,
-             aes(label = Sample),
-             size = 3,
-             hjust = 0,
-             vjust = 0.5,
-             label.padding = unit(0.15, "lines"),
-             show.legend = FALSE) +
-  facet_wrap(~ Group, ncol = 1) +
-  scale_color_manual(values = group_colors, na.value = "gray50") +
-  labs(
-    title = "Rarefaction Curves by Group",
-    x = "Number of Reads",
-    y = "Number of OTUs"
-  ) +
-  theme_minimal() +
-  theme(strip.text = element_text(face = "bold"))
-
-print(p4)
-```
-
-
-# readcount
-```{r}
-# Create data frame with sample names, total reads, and group
-readcount <- data.frame(
-  SampleID = sample_names(ps_obj),
-  TotalReads = sample_sums(ps_obj),
-  Group = sample_data(ps_obj)$Group,
-  stringsAsFactors = FALSE
-)
-
-# Order samples by Group only (preserving original order within groups)
-readcount <- readcount[order(readcount$Group), ]
-readcount$SampleID <- factor(readcount$SampleID, levels = readcount$SampleID)
-
-# Create a numeric x position (1, 2, 3, ...) for manual labeling
-readcount$x_num <- as.numeric(readcount$SampleID)
-
-# Set a y coordinate for the labels (slightly below the bars)
-label_y <- -0.05 * max(readcount$TotalReads)   # adjust the multiplier if needed
-
-# Plot
-p1 <- ggplot(readcount, aes(x = x_num, y = TotalReads, fill = Group)) +
-  geom_bar(stat = "identity", width = 0.8) +
-  geom_hline(yintercept = 10e6, color = "red", linetype = "dashed", size = 1) +
-  # Custom x‑axis labels: red if TotalReads < 10e6, otherwise black
-  geom_text(aes(x = x_num, y = label_y, 
-                label = SampleID, 
-                color = ifelse(TotalReads < 10e6, "red", "black")),
-            size = 3, angle = 90, hjust = 1, vjust = 0.5) +
-  scale_color_identity() +                     # use the literal color names
-  scale_x_continuous(
-    breaks = readcount$x_num,                  # keep bars aligned
-    labels = NULL,                             # hide default x‑axis numbers
-    expand = c(0.02, 0)                        # optional extra space on sides
-  ) +
-  coord_cartesian(clip = "off") +              # allow labels outside plot area
-  labs(x = "Sample ID", y = "Total Reads", title = "Sequencing Depth per Sample") +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_blank(),             # hide original x‑axis text
-    axis.ticks.x = element_blank(),            # hide ticks
-    plot.margin = margin(5, 5, 30, 5),         # increase bottom margin for labels
-    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
-    legend.text = element_text(size = 12),
-    legend.title = element_text(size = 14),
-    legend.key.size = unit(1, "cm")
-  ) +
-  scale_fill_manual(values = c("A" = "steelblue", "B" = "orange", "C" = "darkgreen"))
-p1 <- p1 + annotate("text", x = Inf, y = 10e6, label = "10M cutoff", 
-                    hjust = 1.1, vjust = -10.5, color = "red", size = 4)
-# Save
-ggsave(
-  filename = "/WGS_readcount_v4.png",
-  plot = p1,
-  width = 28,
-  height = 14,
-  units = "in"
-)
-```
-
-#readcount v3
-```{r}
-size=12
-p1 <- ggplot(readcount, aes(x = SampleID, y = TotalReads, fill = Group)) +
-  geom_bar(stat = "identity",width=0.5) +
-  theme_minimal() +
-  ggtitle("Sequencing Depth by Sample") +
-  xlab("Sample ID") +
-  ylab("Number of Reads") +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 1),
-        legend.text = element_text(size = size+25),
-    legend.title = element_text(size = size + 25))
-p1
-
-p2 <- ggplot(readcount, aes(x = SampleID, y = TotalReads, fill = Group)) +
-  geom_bar(stat = "identity") +
-  theme_minimal() +
-  ggtitle("Sequencing Depth by Sample (log scale)") +
-  xlab("Sample ID") +
-  ylab("Number of Reads (log10)") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
-  scale_y_log10(labels = scales::comma_format())
-p2
-ggsave(
-  filename = paste0("/readcount_v3.png"),
-  plot = p1,
-  width = 28,
-  height = 14,
-  units = "in"
-)
-```
-
-# metadata stacked barplot
-```{r}
-# Get categorical variables (already determined)
-# Remove 'timepoint' and 'Group' (assuming 'Group' is your group variable name)
-# Load required libraries
-library(ggplot2)
-library(dplyr)
-library(tidyr)
-
-meta <- data.frame(sample_data(ps))
-
-# Check the structure of Timepoint column
-cat("Class of Timepoint column:", class(meta$Timepoint), "\n")
-cat("Unique values in Timepoint:", unique(meta$Timepoint), "\n")
-
-meta <- meta %>% 
-  filter(Timepoint == '-1')
-
-cat("\nNumber of samples in Timepoint == '-1':", nrow(meta), "\n")
-
-# Using the entire meta dataframe (no timepoint filtering)
-categorical_vars <- names(meta)[sapply(meta, function(x) is.factor(x) || is.character(x))]
-
-# Remove 'timepoint' from the list if it exists
-# Remove 'Group' from categorical_vars since that's our grouping variable
-categorical_vars <- setdiff(categorical_vars, c('Age',"Group", 'Height', 'No_Patient','Weight','Timepoint','SampleID'))
-
-# Check what we have
-cat("Group variable: Group\n")
-cat("Number of groups:", length(unique(meta$Group)), "\n")
-cat("Categorical variables to plot:", length(categorical_vars), "\n")
-print(categorical_vars)
-cat("\nTotal observations in dataset:", nrow(meta), "\n")
-
-# Select only the columns we need
-df_f <- meta %>%
-  select(Group, all_of(categorical_vars))
-
-# Create long format while preserving Group
-df_long <- df_f %>%
-  pivot_longer(cols = -Group,
-               names_to = "Column_Name",
-               values_to = "Value") %>%
-  # Remove rows with NA values in Value
-  filter(!is.na(Value))
-
-# Calculate percentages WITHIN each Value (category level)
-# This means for each categorical variable value, what's the distribution of Groups?
-df_summary <- df_long %>%
-  group_by(Column_Name, Value, Group) %>%
-  tally() %>%
-  group_by(Column_Name, Value) %>%  # Group by Column_Name and Value for percentages
-  mutate(
-    total = sum(n),
-    percent = n/total * 100
-  ) %>%
-  ungroup()
-
-# Plotting parameters - adjust as needed
-size <- 15  # Base text size
-
-# Create the plot: 100% stacked bars with Group as fill, x = Value
-p <- ggplot(df_summary, aes(x = Value, y = percent, fill = Group)) +
-  geom_col() +
-  geom_text(aes(label = paste0(n)),
-            position = position_stack(vjust = 0.5),
-            size = size/3, color = "black") +
-  facet_wrap(~ Column_Name, scales = "free", ncol = 7) +
-  labs(title = "Percentage Distribution by Group for Each Categorical Variable",
-       subtitle = paste("Total N =", nrow(meta)),
-       x = "Category Values",
-       y = "Percentage",
-       fill = "Group") +
-  theme(
-    axis.text.y = element_text(size = size+5, color = "black"),
-    axis.text.x = element_text(size = size+5, color = "black", angle = 45, hjust = 1),
-    axis.title = element_text(size = size + 5, color = "black"),
-    legend.text = element_text(size = size+35),
-    legend.title = element_text(size = size + 35),
-    panel.background = element_rect(fill = "white", colour = "black"),
-    panel.grid.major = element_line(color = "gray90", size = 0.2),
-    strip.text = element_text(size = size, color = "black"),
-    strip.background = element_rect(fill = "gray80", color = "black"),
-    plot.title = element_text(size = size + 5, face = "bold"),
-    plot.subtitle = element_text(size = size)
-  ) +
-  scale_fill_manual(values = c("A" = "#2c7bb6", "B" = "#d7191c", "C" = "#1a9641")) +
-  scale_y_continuous(labels = scales::percent_format(scale = 1),
-                     expand = expansion(mult = c(0, 0.1)))
-
-# Display the plot
-print(p)
-
-# Save to PDF
-if (length(categorical_vars) > 0) {
-  pdf_width <- min(45, 8 + 7 * ceiling(length(categorical_vars)/4))
-  pdf_height <- min(70, 5 * ceiling(length(categorical_vars)/4))
+  )
   
-  pdf("metadata_percentage_by_group_stacked_v3.pdf", width = pdf_width, height = pdf_height)
-  print(p)
-  dev.off()
+  # ---- NOW apply the colour scale to ALL subplots at once using & ----
+  # This overrides the default scale cleanly and shows only ONE warning (if any)
+  combined_plot <- combined_plot & scale_fill_manual(
+    values = my_colors,
+    breaks = fill_levels   # optional, ensures legend order matches
+  )
   
-  cat("\nPDF file saved: metadata_percentage_by_group_stacked.pdf\n")
-} else {
-  cat("\nNo categorical variables to plot!\n")
+  # (Optional) Suppress the "Scale for fill is already present" warning
+  # by wrapping the assignment in suppressWarnings() if you prefer
+  # combined_plot <- suppressWarnings(combined_plot & scale_fill_manual(...))
+  
+  # ---- Save and print ----
+  ggsave(
+    filename = paste0("/NO_SGB_BATCH_counts_top_30_", tolower(rank), "_BIGFIONT.png"),
+    plot = combined_plot,
+    width = 36,
+    height = 28,
+    dpi = 300
+  )
+  
+  print(combined_plot)
 }
 ```
-
