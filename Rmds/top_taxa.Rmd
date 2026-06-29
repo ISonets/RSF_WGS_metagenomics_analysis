@@ -11,13 +11,13 @@ library(tidyverse)
 
 # read phyloseq
 ```{r}
-ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
-#ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_dups_samples_batch_check_all_physeq_wgs.rds')
-#ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_RESEQUENCING_wgs.rds')
+ps <- readRDS('/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v3.rds')
+#ps <- readRDS('/RSF_res_4_ps/RSF_dups_samples_batch_check_all_physeq_wgs.rds')
+#ps <- readRDS('/RSF_res_4_ps/RSF_RESEQUENCING_wgs.rds')
 #ps@sam_data$Age = as.numeric(ps@sam_data$Age)
 #ps@sam_data$Weight <- as.numeric(ps@sam_data$Weight)
 #ps@sam_data$Height <- as.numeric(ps@sam_data$Height)
-#saveRDS(ps, '/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
+#saveRDS(ps, '/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v3.rds')
 #meta <- read_csv('metadata_eng_prepared.csv')
 ps <- ps
 det <- 1/100
@@ -168,7 +168,7 @@ for (rank in ranks) {
                                                              label.theme = element_text(size = 34)))
   
   # Save the plot
-  ggsave(paste0("/home/sonec_iv/BATCH_counts_top_30_", tolower(rank), "_v4_BIGFIONT.png"), combined_plot,  width = 28, height = 20, dpi = 300)
+  ggsave(paste0("/BATCH_counts_top_30_", tolower(rank), "_v4_BIGFIONT.png"), combined_plot,  width = 28, height = 20, dpi = 300)
   
   # Print the plot
   print(combined_plot)
@@ -262,7 +262,7 @@ library(phyloseq)
 library(microViz)
 library(patchwork)
 library(ggplot2)
-#ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
+#ps <- readRDS('/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v3.rds')
 
 bad_batch_samples <- c("AO-203-2", "AO-207-1", "B-022-2", "MB124-2")
 
@@ -709,7 +709,7 @@ p1 <- p1 + annotate("text", x = Inf, y = 10e6, label = "10M cutoff",
                     hjust = 1.1, vjust = -10.5, color = "red", size = 4)
 # Save
 ggsave(
-  filename = "/home/sonec_iv/WGS_readcount_v4.png",
+  filename = "/WGS_readcount_v4.png",
   plot = p1,
   width = 28,
   height = 14,
@@ -717,7 +717,7 @@ ggsave(
 )
 ```
 
-#readcount v2
+#readcount v3
 ```{r}
 size=12
 p1 <- ggplot(readcount, aes(x = SampleID, y = TotalReads, fill = Group)) +
@@ -741,7 +741,7 @@ p2 <- ggplot(readcount, aes(x = SampleID, y = TotalReads, fill = Group)) +
   scale_y_log10(labels = scales::comma_format())
 p2
 ggsave(
-  filename = paste0("/home/sonec_iv/readcount_v2.png"),
+  filename = paste0("/readcount_v3.png"),
   plot = p1,
   width = 28,
   height = 14,
@@ -847,7 +847,7 @@ if (length(categorical_vars) > 0) {
   pdf_width <- min(45, 8 + 7 * ceiling(length(categorical_vars)/4))
   pdf_height <- min(70, 5 * ceiling(length(categorical_vars)/4))
   
-  pdf("metadata_percentage_by_group_stacked_v2.pdf", width = pdf_width, height = pdf_height)
+  pdf("metadata_percentage_by_group_stacked_v3.pdf", width = pdf_width, height = pdf_height)
   print(p)
   dev.off()
   
