@@ -17,7 +17,7 @@ library(ggalluvial)
 # ============================================================
 # Load phyloseq
 # ============================================================
-ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
+ps <- readRDS('/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
 
 # ============================================================================
 # ENTEROTYPE ANALYSIS FOR HUMAN GUT MICROBIOME (FINAL)
