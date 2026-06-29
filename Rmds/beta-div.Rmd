@@ -1,490 +1,247 @@
 ```{r}
+#run
+```{r}
+# ====================================================================
+# BETA-DIVERSITY (BRAY-CURTIS) – GROUP (AB, PPI, OTH, NO) + TIMEPOINTS
+# WITH ANOSIM ON PCoA AND STANDARD SIGNIFICANCE STARS ON BOXPLOTS
+# ====================================================================
+
 library(phyloseq)
-library(microbiome)
-library(ggplot2)
+library(tidyverse)
 library(vegan)
 library(ggpubr)
-library(grid)
-library(PNWColors)
-library(gridExtra)
-library(dplyr)
+library(patchwork)
 
-# Helper function to extract legend (from your code)
-g_legend <- function(a.gplot) {
-  tmp <- ggplot_gtable(ggplot_build(a.gplot))
-  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
-  if (length(leg) > 0) {
-    tmp$grobs[[leg]]
-  } else {
-    NULL
-  }
+# ------------------------------------------------------------
+# 1. Load and clean phyloseq object
+# ------------------------------------------------------------
+ps <- readRDS('./RSF_all_physeq_wgs_COUNTS_v3.rds')
+ps@sam_data$Batch <- as.factor(ps@sam_data$Batch)
+bad_batch_samples <- c('B-024-1', 'B-024-2', 'B-027-2', 'B-030-2')
+if (length(bad_batch_samples) > 0) {
+  ps <- prune_samples(!(sample_names(ps) %in% bad_batch_samples), ps)
 }
 
-# EXACTLY your function for beta-diversity plots (preserving layout)
-create_ordination_plots <- function(ps_obj, method = "PCoA", distance_method = "wunifrac", 
-                                    group, size = 10, palette, title = "") {
-  
-  # Calculate distance matrix
-  dist <- phyloseq::distance(ps_obj, method = distance_method)
-  # Perform ordination
-  ordination <- ordinate(ps_obj, method = method, distance = dist)
-  P <- cbind(as.data.frame(ordination$vectors), as.data.frame(as.matrix(sample_data(ps_obj))))
-  
-  # Ensure axes are numeric
-  P$Axis.1 <- as.numeric(as.character(P$Axis.1))
-  P$Axis.2 <- as.numeric(as.character(P$Axis.2))
-  
-  # Variance explained
-  variance_explained <- 100 * ordination$values$Relative_eig[1:2]
-  
-  # Means per group
-  means <- P %>%
-    group_by(!!rlang::sym(group)) %>%
-    summarise(
-      mean_Axis1 = mean(Axis.1, na.rm = TRUE),
-      mean_Axis2 = mean(Axis.2, na.rm = TRUE)
-    )
-  
-  # Merge means
-  P <- P %>%
-    dplyr::left_join(means, by = c(group))
-  
-  # ANOSIM
-  anosim_res <- anosim(dist, P[[group]])
-  anosim_text <- paste("ANOSIM R:", round(anosim_res$statistic, 3), 
-                       "p-value:", round(anosim_res$signif, 3))
-  
-  # Plot ordination with title
-  pl <- ggplot(P, aes_string(x = "Axis.1", y = "Axis.2", color = group)) +
-    geom_point(size = 2.5, alpha = 0.8) +
-    stat_ellipse() +
-    geom_segment(aes(x = Axis.1, y = Axis.2, xend = mean_Axis1, yend = mean_Axis2), alpha = 0.3) +
-    geom_label(data = means, aes(x = mean_Axis1, y = mean_Axis2, label = !!rlang::sym(group)),
-               fill = "white", color = "black", fontface = "bold", size = 7) +
-    geom_text(x = Inf, y = Inf, label = anosim_text, hjust = 1.1, vjust = 1.1, size = size-7, color = "black") +
-    scale_color_manual(values = palette) +
-    xlab(paste0('PCoA component 1 [', round(variance_explained[1], 1), '%]')) +
-    ylab(paste0('PCoA component 2 [', round(variance_explained[2], 1), '%]')) +
-    ggtitle(title) +
-    theme(
-      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
-      legend.position = "right",
-      text = element_text(size = size, color = 'black'),
-      panel.border = element_rect(fill = NA, color = "black"),
-      axis.text.x = element_text(size = size+10, color='black'),
-      axis.text.y = element_text(size = size+10, color='black'),
-      axis.title.x = element_text(size=25),
-      axis.title.y = element_text(size=25),
-      panel.background = element_rect(fill = "white", color = "black"),
-      panel.grid.major = element_line(size = 0.1, linetype = 'solid', color = "gray"),
-      panel.grid.minor = element_line(size = 0.1, linetype = 'solid', color = "gray"),
-      legend.key.size = unit(2.0, "cm"),
-      legend.text=element_text(size=20),
-      legend.title = element_text(size=20)
-    )
-  legend <- g_legend(pl)
-  pl <- pl + theme(legend.position="none")
-  
-  # Pairwise comparisons for Wilcoxon tests
-  unique_vals <- unique(P[[group]])
-  my_comparisons <- combn(unique_vals, 2, simplify = FALSE) %>% lapply(as.vector)
-  
-  # Density plots for Axis.1
-  x_dens <- ggplot(P, aes_string(x = "Axis.1", y = group, color = group)) +
-    geom_violin(trim = FALSE, alpha = 0.1) +
-    geom_boxplot(width = 0.5, alpha = 0.75) +
-    geom_jitter(size = 2.5, alpha = 0.5) +
-    scale_color_manual(values = palette) +
-    theme(
-      axis.title.x = element_blank(),
-      axis.title.y = element_blank(),
-      axis.text.y = element_text(color = "black", size = size+10),
-      axis.text.x = element_text(angle = 90, hjust = 1, size = size+10, color = 'black'),
-      legend.position = "none",
-      panel.background = element_rect(fill = "white", color = "black"),
-      panel.grid.major = element_line(size = 0.1, linetype = 'solid', color = "gray"),
-      panel.grid.minor = element_line(size = 0.1, linetype = 'solid', color = "gray")
-    ) +
-    stat_compare_means(comparisons = my_comparisons, method = "wilcox.test",
-                       label = "p.signif", y.position = max(P$Axis.1) * 1.1, size = size-5)
-  
-  # Density plots for Axis.2
-  y_dens <- ggplot(P, aes_string(x = "Axis.2", y = group, color = group)) + coord_flip() +
-    geom_violin(trim = FALSE, alpha = 0.1) +
-    geom_boxplot(width = 0.5, alpha = 0.75) +
-    geom_jitter(size = 2.5, alpha = 0.5) +
-    scale_color_manual(values = palette) +
-    theme(
-      axis.title.x = element_blank(),
-      axis.title.y = element_blank(),
-      axis.text.y = element_text(color = "black", size = size+10),
-      axis.text.x = element_text(angle = 90, hjust = 1, size = size+10, color = 'black'),
-      legend.position = "none",
-      panel.background = element_rect(fill = "white", color = "black"),
-      panel.grid.major = element_line(size = 0.1, linetype = 'solid', color = "gray"),
-      panel.grid.minor = element_line(size = 0.1, linetype = 'solid', color = "gray")
-    ) +
-    stat_compare_means(comparisons = my_comparisons, method = "wilcox.test",
-                       label = "p.signif", y.position = max(P$Axis.2) * 1.1, size = size-5)
-  
-  # theme
-  theme_new <- theme_classic() + 
-    theme(plot.margin=unit(c(1.5,1.5,1.5,1.5), "cm"), text=element_text(size=20))
-  
-  theme_set(theme_new)
-  
-  # Convert to grobs
-  gA <- ggplotGrob(x_dens)
-  gB <- ggplotGrob(pl)
-  gD <- ggplotGrob(y_dens)
-  gL <- legend
-  
-  # Set widths - THIS IS CRITICAL FOR ALIGNMENT
-  xWidth = unit.pmax(gB$widths)
-  yHeight = unit.pmax(gB$heights)
-  gA$widths <- xWidth
-  gA$heights[2:5] <- yHeight
-  gB$widths <- xWidth
-  gB$heights <- yHeight
-  gD$widths[2:5] <- xWidth
-  gD$heights <- yHeight
-  
-  # Arrange plots - EXACTLY your layout
-  final_grob <- arrangeGrob(gD, gB, gL, gA, 
-                           ncol=2, nrow=2, 
-                           widths=c(7, 8), heights=c(8, 7))
-  
-  return(final_grob)
+# ------------------------------------------------------------
+# 2. Assign Group (AB, PPI, OTH, NO) – directly replace original Group
+# ------------------------------------------------------------
+sam <- data.frame(sample_data(ps), stringsAsFactors = FALSE)
+sam$SampleID <- rownames(sam)
+
+# Build new grouping, overwriting the existing 'Group' column
+new_group <- rep(NA_character_, nrow(sam))
+new_group[sam$Group == "A" ] <- "AB"
+new_group[sam$Group == "C"] <- "NO"
+new_group[sam$Proton_Pump_Inhibitors == "Yes" & is.na(new_group)] <- "PPI"
+new_group[sam$Group == "B" & is.na(new_group) & sam$Proton_Pump_Inhibitors == "No"] <- "OTH"
+
+sam$Group <- factor(new_group, levels = c("AB", "PPI", "OTH", "NO"))
+sample_data(ps) <- sam
+group_levels <- levels(sam$Group)
+# Keep only samples with defined Group and timepoints -1, -2
+ps_sub <- ps
+sample_data(ps_sub)$Group <- sam$Group
+ps_sub <- subset_samples(ps_sub, !is.na(Group) & Timepoint %in% c("-1", "-2"))
+ps_sub <- prune_taxa(taxa_sums(ps_sub) > 0, ps_sub)
+sample_data(ps_sub)$Timepoint <- factor(sample_data(ps_sub)$Timepoint, levels = c("-1", "-2"))
+
+# ------------------------------------------------------------
+# 3. Bray-Curtis distance and PCoA
+# ------------------------------------------------------------
+ps_rel <- transform_sample_counts(ps_sub, function(x) x / sum(x))
+dist_bc <- phyloseq::distance(ps_rel, method = "bray")
+pcoa <- ordinate(ps_rel, method = "PCoA", distance = dist_bc)
+pcoa_df <- data.frame(sample_data(ps_rel))
+pcoa_df$PC1 <- pcoa$vectors[,1]
+pcoa_df$PC2 <- pcoa$vectors[,2]
+var_explained <- round(pcoa$values$Relative_eig[1:2] * 100, 2)
+
+# ------------------------------------------------------------
+# 4. ANOSIM overall (for annotation)
+# ------------------------------------------------------------
+anosim_res <- anosim(dist_bc, pcoa_df$Group, permutations = 999)
+anosim_text <- paste("ANOSIM R =", round(anosim_res$statistic, 3),
+                     "   p =", format(anosim_res$signif, scientific = FALSE, digits = 3))
+
+# ------------------------------------------------------------
+# 5. PCoA plot with ANOSIM annotation
+# ------------------------------------------------------------
+p_pcoa <- ggplot(pcoa_df, aes(x = PC1, y = PC2, color = Group, shape = Timepoint)) +
+  geom_point(size = 3, alpha = 0.8) +
+  stat_ellipse(aes(group = Group), linetype = 2, size = 0.8) +
+  scale_color_manual(values = c("AB" = "#E41A1C", "PPI" = "#377EB8",
+                                "OTH" = "#4DAF4A", "NO" = "#984EA3")) +
+  theme_bw(base_size = 12) +
+  labs(x = paste0("PC1 (", var_explained[1], "%)"),
+       y = paste0("PC2 (", var_explained[2], "%)"),
+       title = "PCoA – Bray-Curtis distances") +
+  theme(legend.position = "bottom") +
+  annotate("text", x = -Inf, y = Inf, label = anosim_text,
+           hjust = -0.1, vjust = 1.1, size = 3.5, alpha = 0.8)
+
+# ------------------------------------------------------------
+# 6. Boxplots for PC1 and PC2 – all pairwise significance brackets
+# ------------------------------------------------------------
+
+# Helper: unpaired Wilcoxon test for two groups
+calc_wilcox <- function(data, xvar, yvar, g1, g2) {
+  vals <- data[[yvar]]
+  grp  <- data[[xvar]]
+  test <- wilcox.test(vals[grp == g1], vals[grp == g2], exact = FALSE)
+  test$p.value
 }
 
-# Wrapper function with error handling
-create_beta_plot_safe <- function(ps_obj, group, palette, title, distance_method = "wunifrac") {
-  # Check if we have enough samples and groups
-  if (nsamples(ps_obj) < 3) {
-    warning(paste("Not enough samples (n =", nsamples(ps_obj), ") for beta diversity. Skipping."))
-    return(NULL)
-  }
-  
-  unique_groups <- unique(sample_data(ps_obj)[[group]])
-  if (length(unique_groups) < 2) {
-    warning(paste("Group variable has only 1 level:", unique_groups, ". Skipping."))
-    return(NULL)
-  }
-  
-  tryCatch({
-    # Create the plot with EXACT layout
-    plot_grob <- create_ordination_plots(
-      ps_obj = ps_obj,
-      method = "PCoA",
-      distance_method = distance_method,
-      group = group,
-      size = 10,
-      palette = palette,
-      title = title
-    )
-    
-    return(plot_grob)
-    
-  }, error = function(e) {
-    message(paste("Error creating beta diversity plot:", e$message))
-    return(NULL)
-  })
-}
+group_levels <- levels(pcoa_df$Group)   # "AB" "PPI" "OTH" "NO"
 
-# Main analysis function
-run_beta_diversity_analysis <- function(
-    ps_obj,
-    categorical_vars,
-    output_dir = "/home/sonec_iv/beta_diversity_by_variable",
-    distance_method = "wunifrac"
-) {
-  
-  # Create output directory
-  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
-  
-  # Get unique groups and timepoints
-  groups <- sort(unique(ps_obj@sam_data$Group))
-  timepoints <- sort(unique(ps_obj@sam_data$Timepoint))
-  
-  # Define color palettes (SAME as alpha diversity)
-  groupA_colors <- c("-1" = "#FF9999", "-2" = "#FF3333")
-  groupB_colors <- c("-1" = "#99CCFF", "-2" = "#3366FF")
-  groupC_colors <- c("-1" = "#99FF99", "-2" = "#33CC33")
-  
-  group_palette_time1 <- c("A" = "#FF9999", "B" = "#99CCFF", "C" = "#99FF99")
-  group_palette_time2 <- c("A" = "#FF3333", "B" = "#3366FF", "C" = "#33CC33")
-  
-  timepoint_palettes <- list(
-    "A" = groupA_colors,
-    "B" = groupB_colors,
-    "C" = groupC_colors
+# all unique combinations
+pairs_all <- combn(group_levels, 2, simplify = FALSE)   # list of 6 pairs
+
+# compute p-values for all pairs on both PCs
+pval_df <- do.call(rbind, lapply(pairs_all, function(p) {
+  data.frame(
+    Group1 = p[1],
+    Group2 = p[2],
+    pval_PC1 = calc_wilcox(pcoa_df, "Group", "PC1", p[1], p[2]),
+    pval_PC2 = calc_wilcox(pcoa_df, "Group", "PC2", p[1], p[2]),
+    stringsAsFactors = FALSE
   )
-  
-  # Loop through each categorical variable
-  for (col in categorical_vars) {
-    cat("\nProcessing variable:", col, "\n")
-    
-    # Create subdirectory for this variable
-    var_dir <- file.path(output_dir, col)
-    dir.create(var_dir, showWarnings = FALSE)
-    
-    # Skip if not enough unique values
-    if (length(unique(ps_obj@sam_data[[col]])) < 2) {
-      cat("  Skipping - less than 2 unique values\n")
-      next
-    }
-    
-    # Store plots for this variable
-    var_plots <- list()
-    
-    # PLOT 1: Groups A vs B vs C in Timepoint -1
-    cat("  Creating Plot 1: Groups in Timepoint -1\n")
-    ps_time1 <- subset_samples(ps_obj, Timepoint == "-1")
-    
-    if (nsamples(ps_time1) >= 3 && length(unique(ps_time1@sam_data$Group)) >= 2) {
-      p1 <- create_beta_plot_safe(
-        ps_obj = ps_time1,
-        group = "Group",
-        palette = group_palette_time1,
-        title = paste(col, "- Groups in Timepoint -1"),
-        distance_method = distance_method
-      )
-      
-      if (!is.null(p1)) {
-        # Save plot - using ggsave with grid object
-        png_file <- file.path(var_dir, paste0(col, "_1_groups_timepoint-1.png"))
-        png(png_file, width = 16, height = 12, units = "in", res = 300)
-        grid.draw(p1)
-        dev.off()
-        
-        var_plots[[1]] <- p1
-        cat("    Saved:", basename(png_file), "\n")
-      }
-    }
-    
-    # PLOT 2: Groups A vs B vs C in Timepoint -2
-    cat("  Creating Plot 2: Groups in Timepoint -2\n")
-    ps_time2 <- subset_samples(ps_obj, Timepoint == "-2")
-    
-    if (nsamples(ps_time2) >= 3 && length(unique(ps_time2@sam_data$Group)) >= 2) {
-      p2 <- create_beta_plot_safe(
-        ps_obj = ps_time2,
-        group = "Group",
-        palette = group_palette_time2,
-        title = paste(col, "- Groups in Timepoint -2"),
-        distance_method = distance_method
-      )
-      
-      if (!is.null(p2)) {
-        png_file <- file.path(var_dir, paste0(col, "_2_groups_timepoint-2.png"))
-        png(png_file, width = 16, height = 12, units = "in", res = 300)
-        grid.draw(p2)
-        dev.off()
-        
-        var_plots[[2]] <- p2
-        cat("    Saved:", basename(png_file), "\n")
-      }
-    }
-    
-    # PLOT 3: Group A - Timepoint -1 vs -2
-    cat("  Creating Plot 3: Group A timepoints\n")
-    ps_groupA <- subset_samples(ps_obj, Group == "A")
-    
-    if (nsamples(ps_groupA) >= 3 && length(unique(ps_groupA@sam_data$Timepoint)) >= 2) {
-      p3 <- create_beta_plot_safe(
-        ps_obj = ps_groupA,
-        group = "Timepoint",
-        palette = timepoint_palettes[["A"]],
-        title = paste(col, "- Group A: Timepoints -1 vs -2"),
-        distance_method = distance_method
-      )
-      
-      if (!is.null(p3)) {
-        png_file <- file.path(var_dir, paste0(col, "_3_groupA_timepoints.png"))
-        png(png_file, width = 16, height = 12, units = "in", res = 300)
-        grid.draw(p3)
-        dev.off()
-        
-        var_plots[[3]] <- p3
-        cat("    Saved:", basename(png_file), "\n")
-      }
-    }
-    
-    # PLOT 4: Group B - Timepoint -1 vs -2
-    cat("  Creating Plot 4: Group B timepoints\n")
-    ps_groupB <- subset_samples(ps_obj, Group == "B")
-    
-    if (nsamples(ps_groupB) >= 3 && length(unique(ps_groupB@sam_data$Timepoint)) >= 2) {
-      p4 <- create_beta_plot_safe(
-        ps_obj = ps_groupB,
-        group = "Timepoint",
-        palette = timepoint_palettes[["B"]],
-        title = paste(col, "- Group B: Timepoints -1 vs -2"),
-        distance_method = distance_method
-      )
-      
-      if (!is.null(p4)) {
-        png_file <- file.path(var_dir, paste0(col, "_4_groupB_timepoints.png"))
-        png(png_file, width = 16, height = 12, units = "in", res = 300)
-        grid.draw(p4)
-        dev.off()
-        
-        var_plots[[4]] <- p4
-        cat("    Saved:", basename(png_file), "\n")
-      }
-    }
-    
-    # PLOT 5: Group C - Timepoint -1 vs -2
-    cat("  Creating Plot 5: Group C timepoints\n")
-    ps_groupC <- subset_samples(ps_obj, Group == "C")
-    
-    if (nsamples(ps_groupC) >= 3 && length(unique(ps_groupC@sam_data$Timepoint)) >= 2) {
-      p5 <- create_beta_plot_safe(
-        ps_obj = ps_groupC,
-        group = "Timepoint",
-        palette = timepoint_palettes[["C"]],
-        title = paste(col, "- Group C: Timepoints -1 vs -2"),
-        distance_method = distance_method
-      )
-      
-      if (!is.null(p5)) {
-        png_file <- file.path(var_dir, paste0(col, "_5_groupC_timepoints.png"))
-        png(png_file, width = 16, height = 12, units = "in", res = 300)
-        grid.draw(p5)
-        dev.off()
-        
-        var_plots[[5]] <- p5
-        cat("    Saved:", basename(png_file), "\n")
-      }
-    }
-    
-    # PLOT 6: Beta diversity by the categorical variable itself
-    cat("  Creating Plot 6: Variable distribution\n")
-    unique_vals <- unique(ps_obj@sam_data[[col]])
-    
-    if (length(unique_vals) >= 2 && nsamples(ps_obj) >= 3) {
-      # Create palette for this variable
-      n_colors <- length(unique_vals)
-      if (n_colors <= 8) {
-        var_palette <- pnw_palette("Sunset2", n_colors, type = "continuous")
-      } else {
-        var_palette <- pnw_palette("Sunset2", 8, type = "continuous")
-        var_palette <- colorRampPalette(var_palette)(n_colors)
-      }
-      names(var_palette) <- unique_vals
-      
-      p6 <- create_beta_plot_safe(
-        ps_obj = ps_obj,
-        group = col,
-        palette = var_palette,
-        title = paste(col, "- Beta Diversity Distribution"),
-        distance_method = distance_method
-      )
-      
-      if (!is.null(p6)) {
-        png_file <- file.path(var_dir, paste0(col, "_6_variable_distribution.png"))
-        png(png_file, width = 16, height = 12, units = "in", res = 300)
-        grid.draw(p6)
-        dev.off()
-        
-        var_plots[[6]] <- p6
-        cat("    Saved:", basename(png_file), "\n")
-      }
-    }
-    
-    # Create a combined grid of all plots for this variable
-    cat("  Creating combined grid\n")
-    
-    # Remove NULL plots
-    var_plots <- var_plots[!sapply(var_plots, is.null)]
-    
-    # Create combined grid if we have plots
-    if (length(var_plots) > 0) {
-      # Calculate grid dimensions
-      ncols <- min(2, length(var_plots))
-      nrows <- ceiling(length(var_plots) / ncols)
-      
-      # Create combined plot with uniform sizing
-      combined_grob <- arrangeGrob(
-        grobs = var_plots,
-        ncol = ncols,
-        nrow = nrows,
-        top = textGrob(paste("Beta Diversity Analysis for Variable:", col), 
-                      gp = gpar(fontsize = 18, fontface = "bold"))
-      )
-      
-      # Save combined plot
-      combined_file <- file.path(var_dir, paste0(col, "_combined_grid.png"))
-      png(combined_file, 
-          width = ncols * 16, 
-          height = nrows * 12, 
-          units = "in", res = 300)
-      grid.draw(combined_grob)
-      dev.off()
-      
-      cat("    Saved combined grid:", basename(combined_file), "\n")
-    }
-    
-    cat("  Completed beta diversity analysis for variable:", col, "\n")
-  }
-  
-  cat("\n=== BETA DIVERSITY ANALYSIS COMPLETE ===\n")
-  cat("All plots saved in:", output_dir, "\n")
-  cat("For each categorical variable, you should find:\n")
-  cat("1. Variable_1_groups_timepoint-1.png\n")
-  cat("2. Variable_2_groups_timepoint-2.png\n")
-  cat("3. Variable_3_groupA_timepoints.png\n")
-  cat("4. Variable_4_groupB_timepoints.png\n")
-  cat("5. Variable_5_groupC_timepoints.png\n")
-  cat("6. Variable_6_variable_distribution.png\n")
-  cat("7. Variable_combined_grid.png\n")
+}))
+
+# function to convert p-value to significance stars
+star <- function(p) {
+  ifelse(p < 0.001, "***",
+         ifelse(p < 0.01, "**",
+                ifelse(p < 0.05, "*", "ns")))
+}
+pval_df$signif_PC1 <- star(pval_df$pval_PC1)
+pval_df$signif_PC2 <- star(pval_df$pval_PC2)
+
+# overall Kruskal–Wallis
+kw_pc1 <- kruskal.test(PC1 ~ Group, data = pcoa_df)
+kw_pc2 <- kruskal.test(PC2 ~ Group, data = pcoa_df)
+
+# x positions for the four groups
+group_x <- setNames(seq_along(group_levels), group_levels)
+
+# --------------------------------------------------
+# PC1 boxplot
+# --------------------------------------------------
+y_range_pc1 <- diff(range(pcoa_df$PC1, na.rm = TRUE))
+y_max_pc1   <- max(pcoa_df$PC1, na.rm = TRUE)
+step_pc1    <- 0.07 * y_range_pc1      # vertical spacing between brackets
+bracket_base_pc1 <- y_max_pc1 + 0.05 * y_range_pc1   # first bracket height
+
+p_pc1_box <- ggplot(pcoa_df, aes(x = Group, y = PC1, fill = Group)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+  geom_jitter(width = 0.2, size = 1.5, alpha = 0.6) +
+  scale_fill_manual(values = c("AB" = "#E41A1C", "PPI" = "#377EB8",
+                               "OTH" = "#4DAF4A", "NO" = "#984EA3")) +
+  theme_bw(base_size = 12) +
+  labs(y = "PC1 score", title = "PC1") +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+# add pairwise brackets (6 comparisons)
+for (i in 1:nrow(pval_df)) {
+  g1 <- pval_df$Group1[i]
+  g2 <- pval_df$Group2[i]
+  x1 <- group_x[g1]
+  x2 <- group_x[g2]
+  y_val <- bracket_base_pc1 + (i-1) * step_pc1
+  p_pc1_box <- p_pc1_box +
+    annotate("segment", x = x1, xend = x2, y = y_val, yend = y_val) +
+    annotate("text", x = mean(c(x1, x2)), y = y_val + 0.015 * y_range_pc1,
+             label = pval_df$signif_PC1[i], size = 4.5, vjust = 0)
 }
 
-# Main execution
-# Read phyloseq object
-#ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS.rds')
-ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/hm3/RSF_ps_humann_joint.rds')
-#ps <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_ps_mags.rds')
-# Prepare the phyloseq object (same as alpha diversity)
-#level <- 'Species'
-det <- 1/100
-prev <- 10/100
+# add Kruskal–Wallis annotation above all brackets
+kw_y_pc1 <- bracket_base_pc1 + (nrow(pval_df) + 0.7) * step_pc1
+p_pc1_box <- p_pc1_box +
+  annotate("text", x = 2.5, y = kw_y_pc1,
+           label = paste0("Kruskal–Wallis p = ", format(kw_pc1$p.value, digits = 2, scientific = TRUE)),
+           size = 3.5, hjust = 0.5)
 
-taxas <- core_members(ps, detection = det, prevalence = prev, include.lowest = FALSE)
-ps_filt <- prune_taxa(taxas, ps)
-#ps_filt <- speedyseq::tax_glom(ps_filt, taxrank = level, NArm = TRUE)
+# --------------------------------------------------
+# PC2 boxplot (identical logic)
+# --------------------------------------------------
+y_range_pc2 <- diff(range(pcoa_df$PC2, na.rm = TRUE))
+y_max_pc2   <- max(pcoa_df$PC2, na.rm = TRUE)
+step_pc2    <- 0.07 * y_range_pc2
+bracket_base_pc2 <- y_max_pc2 + 0.05 * y_range_pc2
 
-# Define categorical variables
-meta <- ps_filt@sam_data
-meta$Batch <- as.factor(meta$Batch)
-categorical_vars <- names(meta)[sapply(meta, function(x) is.factor(x) || is.character(x))]
-categorical_vars <- setdiff(categorical_vars, c('Age', "Group", 'Height', 'No_Patient', 
-                                                'Weight', 'Timepoint', 'Asthma_Treatment_Drugs', 'SampleID'))
+p_pc2_box <- ggplot(pcoa_df, aes(x = Group, y = PC2, fill = Group)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+  geom_jitter(width = 0.2, size = 1.5, alpha = 0.6) +
+  scale_fill_manual(values = c("AB" = "#E41A1C", "PPI" = "#377EB8",
+                               "OTH" = "#4DAF4A", "NO" = "#984EA3")) +
+  theme_bw(base_size = 12) +
+  labs(y = "PC2 score", title = "PC2") +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
 
-# Run beta diversity analysis with weighted UniFrac
-cat("Starting beta diversity analysis with weighted UniFrac...\n")
-run_beta_diversity_analysis(
-  ps_obj = ps_filt,
-  categorical_vars = categorical_vars,
-  output_dir = "/home/sonec_iv/beta_diversity_PATHS_wunifrac",
-  distance_method = "wunifrac"
-)
+for (i in 1:nrow(pval_df)) {
+  g1 <- pval_df$Group1[i]
+  g2 <- pval_df$Group2[i]
+  x1 <- group_x[g1]
+  x2 <- group_x[g2]
+  y_val <- bracket_base_pc2 + (i-1) * step_pc2
+  p_pc2_box <- p_pc2_box +
+    annotate("segment", x = x1, xend = x2, y = y_val, yend = y_val) +
+    annotate("text", x = mean(c(x1, x2)), y = y_val + 0.015 * y_range_pc2,
+             label = pval_df$signif_PC2[i], size = 4.5, vjust = 0)
+}
 
-# Optional: Run with other distance metrics
-cat("\n\nStarting beta diversity analysis with Bray-Curtis...\n")
-run_beta_diversity_analysis(
-  ps_obj = ps_filt,
-  categorical_vars = categorical_vars,
-  output_dir = "/home/sonec_iv/beta_diversity_PATHS_bray",
-  distance_method = "bray"
-)
+kw_y_pc2 <- bracket_base_pc2 + (nrow(pval_df) + 0.7) * step_pc2
+p_pc2_box <- p_pc2_box +
+  annotate("text", x = 2.5, y = kw_y_pc2,
+           label = paste0("Kruskal–Wallis p = ", format(kw_pc2$p.value, digits = 2, scientific = TRUE)),
+           size = 3.5, hjust = 0.5)
 
-cat("\n\nStarting beta diversity analysis with Jaccard...\n")
-run_beta_diversity_analysis(
-  ps_obj = ps_filt,
-  categorical_vars = categorical_vars,
-  output_dir = "/home/sonec_iv/beta_diversity_PATHS_jaccard",
-  distance_method = "jaccard"
-)
+# ------------------------------------------------------------
+# Combine plots (this line stays as before)
+# ------------------------------------------------------------
+combined_plot <- p_pcoa / (p_pc1_box | p_pc2_box) + 
+  plot_annotation(tag_levels = 'A') &
+  theme(plot.tag = element_text(face = "bold"))
+
+# ------------------------------------------------------------
+# 7. ANOSIM pairwise (optional) – output to console
+# ------------------------------------------------------------
+pairwise_anosim <- function(dist, grouping) {
+  groups <- unique(grouping)
+  res <- data.frame()
+  for (i in 1:(length(groups)-1)) {
+    for (j in (i+1):length(groups)) {
+      keep <- grouping %in% c(groups[i], groups[j])
+      sub_dist <- as.dist(as.matrix(dist)[keep, keep])
+      sub_group <- grouping[keep]
+      test <- anosim(sub_dist, sub_group, permutations = 999)
+      res <- rbind(res, data.frame(Group1 = groups[i], Group2 = groups[j],
+                                   R = test$statistic, p.value = test$signif))
+    }
+  }
+  return(res)
+}
+pairwise <- pairwise_anosim(dist_bc, pcoa_df$Group)
+cat("\n=== Pairwise ANOSIM (Group) ===\n")
+print(pairwise)
+
+# ------------------------------------------------------------
+# 8. Save outputs
+# ------------------------------------------------------------
+out_dir <- "/beta_diversity_group_analysis"
+dir.create(out_dir, showWarnings = FALSE)
+
+ggsave(file.path(out_dir, "PCoA_with_boxplots.png"), combined_plot,
+       width = 10, height = 10, dpi = 300)
+ggsave(file.path(out_dir, "PCoA_ordination.png"), p_pcoa,
+       width = 7, height = 5, dpi = 300)
+ggsave(file.path(out_dir, "PC1_boxplot.png"), p_pc1_box,
+       width = 5, height = 5, dpi = 300)
+ggsave(file.path(out_dir, "PC2_boxplot.png"), p_pc2_box,
+       width = 5, height = 5, dpi = 300)
+write.csv(pairwise, file.path(out_dir, "pairwise_anosim_group.csv"), row.names = FALSE)
+
+cat("\nAll results saved in:", out_dir, "\n")
+
 ```
-
