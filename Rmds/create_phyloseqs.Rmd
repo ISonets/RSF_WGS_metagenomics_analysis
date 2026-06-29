@@ -7,7 +7,7 @@ library(tibble)
 
 # metadata table
 ```{r}
-meta <- read.csv('/home/sonec_iv/RSF_res_4_ps/metadata_filtered_eng.txt')
+meta <- read.csv('./RSF_res_4_ps/metadata_filtered_eng.txt')
 rownames(meta) <- meta$No_Patient
 #meta$ID <- gsub('MPAR','MPAR_',meta$ID)
 meta <- as.data.frame(sapply(meta, function(x) replace(x, x == "", "No")))
@@ -95,7 +95,7 @@ print(head(expanded_meta$Age))
 
 cat("\nChecking if Group column has data (first 6):\n")
 print(head(expanded_meta$Group))
-write.csv(expanded_meta, '/home/sonec_iv/RSF_res_4_ps/expanded_metadata.csv')
+write.csv(expanded_meta, '/RSF_res_4_ps/expanded_metadata.csv')
 ```
 # OTU from mpa4 table
 ```{r}
@@ -105,13 +105,13 @@ library(tidyverse)
 
 # 1. Read MetaPhLAN table (preserving sample names with dashes)
 # also making phyloseq w/counts
-otu_table <- read.table("/home/sonec_iv/RSF_res_4_ps/mpa4/counts/merged_metaphlan_counts.txt", 
+otu_table <- read.table("/RSF_res_4_ps/mpa4/counts/merged_metaphlan_counts.txt", 
                         header = TRUE, 
                         sep = "\t", 
                         row.names = 1, 
                         check.names = FALSE, 
                         comment.char = "")
-otu_table2 <- read.table("/home/sonec_iv/RSF_res_4_ps/mpa4/counts/merged_metaphlan_counts.txt", 
+otu_table2 <- read.table("/RSF_res_4_ps/mpa4/counts/merged_metaphlan_counts.txt", 
                         header = TRUE, 
                         sep = "\t", 
                         #row.names = 1, 
@@ -172,7 +172,7 @@ head(tax_matrix)
 
 ```{r}
 # Create phyloseq components
-expanded_meta <- read.csv('/home/sonec_iv/RSF_res_4_ps/expanded_metadata.csv',row.names = 1)
+expanded_meta <- read.csv('/RSF_res_4_ps/expanded_metadata.csv',row.names = 1)
 OTU <- otu_table(otu_matrix, taxa_are_rows = TRUE)
 TAX <- tax_table(unique_tax)
 #TAX <- tax_table(tax_matrix_no_sgb)
@@ -181,8 +181,8 @@ SAMPLES <- sample_data(expanded_meta)
 # Create the phyloseq object
 physeq <- phyloseq(OTU, TAX, SAMPLES)
 physeq <- subset_taxa(physeq, !(Kingdom %in% c("UNCLASSIFIED","Archaea", "Eukaryota")))
-saveRDS(physeq, '/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
-physeq <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
+saveRDS(physeq, '/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
+physeq <- readRDS('/RSF_res_4_ps/RSF_all_physeq_wgs_COUNTS_v2.rds')
 # Check the object
 physeq@tax_table
 cat("\nNumber of taxa:", ntaxa(physeq))
@@ -332,9 +332,9 @@ cat("Shared samples:", length(intersect(otu_samples, sample_samples)), "\n")
 
 # create HUMANn phyloseq object
 ```{r}
-expanded_meta <- read.csv('/home/sonec_iv/RSF_res_4_ps/expanded_metadata.csv',row.names = 1)
+expanded_meta <- read.csv('/RSF_res_4_ps/expanded_metadata.csv',row.names = 1)
 #create HUMANn phyloseq
-humann_data <- read.csv("/home/sonec_iv/RSF_res_4_ps/hm3/RSF_humann_res.csv",header = TRUE, 
+humann_data <- read.csv("/RSF_res_4_ps/hm3/RSF_humann_res.csv",header = TRUE, 
                         sep = "\t", 
                         row.names = 1, 
                         check.names = FALSE, 
@@ -342,7 +342,6 @@ humann_data <- read.csv("/home/sonec_iv/RSF_res_4_ps/hm3/RSF_humann_res.csv",hea
 #humann_data <- humann_data %>%column_to_rownames(var = "Pathway")
 humann_data <- humann_data[!grepl("UNINTEGRATED|UNMAPPED", rownames(humann_data)), ]
 humann_data <- humann_data[!grepl("archaea|fungi|yeast|mammals|vertebrates|plants|mitochondria|invertebrates|mammalian|human", rownames(humann_data)), ]
-
 ```
 
 #humann phyloseq DEBUG
@@ -351,8 +350,8 @@ humann_data <- humann_data[!grepl("archaea|fungi|yeast|mammals|vertebrates|plant
 library(phyloseq)
 
 # Read your data (adjust paths if needed)
-expanded_meta <- read.csv('/home/sonec_iv/RSF_res_4_ps/expanded_metadata.csv', row.names = 1)
-humann_data <- read.csv("/home/sonec_iv/RSF_res_4_ps/hm3/RSF_humann_res.csv", 
+expanded_meta <- read.csv('/RSF_res_4_ps/expanded_metadata.csv', row.names = 1)
+humann_data <- read.csv("/RSF_res_4_ps/hm3/RSF_humann_res.csv", 
                         header = TRUE, 
                         sep = "\t", 
                         row.names = 1, 
@@ -517,384 +516,113 @@ cat("   expanded_meta <- expanded_meta[shared, ]\n")
 cat("   humann_data <- humann_data[, shared]\n")
 cat("   # Then create phyloseq\n")
 ```
-
-
-
-# making also HUMANn joint phyloseq, without splitting pathways to specific bacteria
+# making also HUMANn joint phyloseq, without splitting pathways to specific bacteria (UPD june 2026: more strict filters)
 ```{r}
 humann_data_joint <- humann_data[!grepl("\\|", row.names(humann_data)), ]  # Rows without '|'
 hm_phyloseq <- phyloseq(otu_table(humann_data,taxa_are_rows = TRUE), sample_data(expanded_meta))
 hm_phyloseq_joint <- phyloseq(otu_table(humann_data_joint,taxa_are_rows = TRUE), sample_data(expanded_meta))
 #hm_phyloseq <- subset_samples(hm_phyloseq, !(ID %in% samples_2_del))
 #hm_phyloseq_joint <- subset_samples(hm_phyloseq_joint, !(ID %in% samples_2_del))
-saveRDS(hm_phyloseq_joint, '/home/sonec_iv/RSF_res_4_ps/hm3/RSF_ps_humann_joint.rds')
-saveRDS(hm_phyloseq, '/home/sonec_iv/RSF_res_4_ps/hm3/RSF_ps_humann.rds')
-```
-
-# MAGs phyloseq and its filtering
-```{r}
-expanded_meta <- read.csv('/home/sonec_iv/RSF_res_4_ps/expanded_metadata.csv',row.names = 1)
-mags_count_data <- read.csv("/home/sonec_iv/RSF_res_4_ps/mags/RSF2_mags_reads.csv", sep=',', check.names = FALSE)
-mags_tax_data <- read.csv("/home/sonec_iv/RSF_res_4_ps/mags/RSF2_gtdbtk.tsv", sep='\t', header=FALSE)
-mags_tax_data$Species <- gsub(" ", "_", mags_tax_data$Species)
-mags_tax_data<- mags_tax_data %>% mutate_all(na_if,"")
-tax_matrix <- as.matrix(mags_tax_data[, -1])
-rownames(tax_matrix) <- mags_tax_data[, 1]    # 1st col is rownames now
-colnames(tax_matrix) <- colnames(mags_tax_data)[-1]
-mags_tax_table <- tax_table(tax_matrix)
-mags_ps <- phyloseq(otu_table(mags_count_data,taxa_are_rows = TRUE), sample_data(meta),tax_table(mags_tax_table))
-mags_ps <- subset_samples(mags_ps, !(ID %in% samples_2_del))
-mags_ps@otu_table[is.na(mags_ps@otu_table)] <- 0
-# filtering out of bad quality MAGs
-keep_genomes <- read.csv("/home/sonec_iv/RSF_res_4_ps/mags/derep/RSF1_derep_mags.list")
-keep_genomes <- as.character(keep_genomes)
-keep_genomes_clean <- gsub('[\\"c()]', '', keep_genomes)  # Remove \", "c(", ")", etc.
-keep_genomes_clean <- trimws(keep_genomes_clean)
-keep_genomes_clean <- unlist(strsplit(keep_genomes_clean, ", "))
-if (!taxa_are_rows(mags_ps)) {
-  otu_table(mags_ps) <- t(otu_table(mags_ps))
-}
-# Subset taxa (genomes)
-mags_ps_filtered <- prune_taxa(taxa_names(mags_ps) %in% keep_genomes_clean, mags_ps)
-#saveRDS(mags_ps_filtered, '/home/sonec_iv/RSF_res_4_ps/RSF2_ps_mags_filt.rds')
-```
-
-
-# MAGs phyloseq pt.2
-```{r}
-mags_count_data <- read.csv("/home/sonec_iv/RSF_res_4_ps/mags/RSF1_mags_reads.csv", sep=',', check.names = FALSE)
-mags_tax_data <- read.csv("/home/sonec_iv/RSF_res_4_ps/mags/RSF1_gtdbtk.tsv", sep='\t', header=FALSE, row.names=1)
-#meta <- read.csv("/home/sonec_iv/RSF_res_4_ps/expanded_metadata.csv", row.names = 1)
-
-# Create a new dataframe with split taxonomy columns
-df_new <- mags_tax_data %>%
-  # Separate the classification column into multiple columns
-  separate(col = V2, 
-           into = c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"),
-           sep = ";") %>%
-  # Remove the prefixes (d__, p__, etc.) from each column
-  mutate(across(c(Kingdom, Phylum, Class, Order, Family, Genus, Species),
-                ~ str_remove(., "^[a-z]__"))) %>%
-  # Select only the first column (assuming it's an ID or key column) and the new taxonomy columns
-  select(1, Kingdom, Phylum, Class, Order, Family, Genus, Species)
-#rownames(df_new) <- df_new$user_genome
-#df_new$user_genome <- NULL
-# View the result
-mags_count_data[is.na(mags_count_data)] <- 0
-otu_matrix <- mags_count_data %>%
-  column_to_rownames("genome") %>%  # Move taxa_id to row names
-  as.matrix()
-otu <- otu_table(otu_matrix, taxa_are_rows = T)
-otu_taxa <- taxa_names(otu)
-#tax <- tax_table(df_new)
-#tax_taxa <- rownames(tax)
-#otu <- otu_table(otu_matrix, taxa_are_rows = TRUE)
-mags_tax_table <- tax_table(as.matrix(df_new))
-mags_ps <- phyloseq(otu, sample_data(expanded_meta),mags_tax_table)
-saveRDS(mags_ps,'/home/sonec_iv/RSF_res_4_ps/mags/RSF1_ps.rds')
-```
-# MAGs ps DEBUG
-```{r}
-# Display structure and parts of your dataframes
-cat("=== OTU DATA (abundance) ===\n")
-cat("Dimensions:", dim(otu_matrix), "\n")
-cat("First few rownames of otu_data:\n", head(rownames(otu_matrix)), "\n\n")
-
-cat("=== TAXONOMY DATA ===\n")
-cat("Dimensions:", dim(df_new), "\n")
-cat("First few rownames of tax_data:\n", head(rownames(df_new)), "\n\n")
-
-# Check if rownames are identical
-cat("=== COMPARING ROWNAMES ===\n")
-cat("Are rownames identical?", identical(rownames(otu_matrix), rownames(df_new)), "\n")
-cat("Do they have the same length?", length(rownames(otu_matrix)) == length(rownames(df_new)), "\n")
-cat("First mismatched rowname (if any):\n")
-mismatch <- which(rownames(otu_matrix) != rownames(df_new))
-if(length(mismatch) > 0) {
-  cat("At position", mismatch[1], "otu:", rownames(otu_matrix)[mismatch[1]], 
-      "tax:", rownames(df_new)[mismatch[1]], "\n")
-} else {
-  cat("No mismatches found\n")
-}
-```
-
-# DEBUG and fix
-```{r}
-# Step 1: Check which MAGs are in common vs unique to each dataset
-common_mags <- intersect(rownames(otu_matrix), rownames(df_new))
-otu_only_mags <- setdiff(rownames(otu_matrix), rownames(df_new))
-tax_only_mags <- setdiff(rownames(df_new), rownames(otu_matrix))
-
-cat("=== TAXA OVERLAP ANALYSIS ===\n")
-cat("Total OTU MAGs:", length(rownames(otu_matrix)), "\n")
-cat("Total TAX MAGs:", length(rownames(df_new)), "\n")
-cat("Common MAGs:", length(common_mags), "\n")
-cat("MAGs in OTU only:", length(otu_only_mags), "\n")
-cat("MAGs in TAX only:", length(tax_only_mags), "\n\n")
-
-# Show examples of mismatched MAGs
-cat("First 5 MAGs in OTU only:\n")
-print(head(otu_only_mags, 5))
-cat("\nFirst 5 MAGs in TAX only:\n")
-print(head(tax_only_mags, 5))
-
-# Step 2: Subset both datasets to only include common MAGs
-# This is usually the safest approach
-otu_matrix_common <- otu_matrix[common_mags, ]
-df_new_common <- df_new[common_mags, ]
-
-cat("\n=== AFTER SUBSETTING TO COMMON MAGs ===\n")
-cat("OTU matrix dimensions:", dim(otu_matrix_common), "\n")
-cat("TAX matrix dimensions:", dim(df_new_common), "\n")
-
-# Step 3: Check if rownames now match
-cat("Rownames identical after subsetting?", identical(rownames(otu_matrix_common), rownames(df_new_common)), "\n")
-
-# Step 4: Convert taxonomy data to matrix properly
-# Make sure all columns are character type
-tax_matrix <- as.matrix(df_new_common)
-cat("\nTaxonomy matrix rownames (first 5):\n")
-print(head(rownames(tax_matrix)))
-
-# Step 5: Create phyloseq object
-otu <- otu_table(otu_matrix_common, taxa_are_rows = TRUE)
-tax <- tax_table(tax_matrix)
-
-physeq <- phyloseq(otu, tax)
-
-cat("\n=== PHYLOSEQ CREATION SUCCESS ===\n")
-cat("Phyloseq object created!\n")
-cat("Number of taxa in phyloseq:", ntaxa(physeq), "\n")
-cat("Number of samples in phyloseq:", nsamples(physeq), "\n")
-cat("First 5 taxa names in phyloseq:\n")
-print(head(taxa_names(physeq), 5))
-saveRDS(physeq,'/home/sonec_iv/RSF_res_4_ps/mags/RSF1_ps.rds')
-```
-
-# merge MAGs phyloseqs
-```{r}
-p1 <- readRDS('/home/sonec_iv/RSF_res_4_ps/mags/RSF1_ps.rds')
-p2 <- readRDS('/home/sonec_iv/RSF_res_4_ps/mags/RSF2_ps.rds')
-p3 <- readRDS('/home/sonec_iv/RSF_res_4_ps/mags/RSF3_ps.rds')
-ps_mags <- merge_phyloseq(p1,p2,p3)
-saveRDS(ps_mags, '/home/sonec_iv/RSF_res_4_ps/RSF_ps_mags.rds')
-ps_obj2 <- ps_mags
-level <- 'Species'
-det <- 1/100
-prev <- 10/100
-taxas <- core_members(ps_obj2, detection = det, prevalence = prev, include.lowest = F)
-ps_obj <- prune_taxa(taxas, ps_obj2)
-ps_obj <- speedyseq::tax_glom(ps_obj, taxrank = level, NArm = TRUE)
-ps_obj@tax_table
-ps_mags
-```
-
-# merged MAGs phyloseq DEBUG
-```{r}
-# Load required library
-library(phyloseq)
-#ps_mags <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_ps_mags.rds')
-# Get sample names from both sources
-meta_samples <- rownames(expanded_meta)
-mags_samples <- sample_names(ps_mags)
-
-# Basic dimensions
-cat("=== SAMPLE COUNTS ===\n")
-cat("Metadata samples:", length(meta_samples), "\n")
-cat("MAGs phyloseq samples:", length(mags_samples), "\n")
-cat("Missing samples from MAGs:", length(meta_samples) - length(mags_samples), "\n\n")
-
-# Find mismatches
-cat("=== SAMPLE NAME COMPARISON ===\n")
-
-# Samples in metadata but NOT in MAGs phyloseq
-missing_in_mags <- setdiff(meta_samples, mags_samples)
-cat("Samples in metadata but NOT in MAGs (", length(missing_in_mags), " samples):\n", sep = "")
-if (length(missing_in_mags) > 0) {
-  print(missing_in_mags)
-  
-  # Show first 10 for brevity
-  if (length(missing_in_mags) > 10) {
-    cat("\nFirst 10 missing samples:\n")
-    print(head(missing_in_mags, 10))
-  }
-}
-
-# Samples in MAGs phyloseq but NOT in metadata
-extra_in_mags <- setdiff(mags_samples, meta_samples)
-cat("\nSamples in MAGs but NOT in metadata (", length(extra_in_mags), " samples):\n", sep = "")
-if (length(extra_in_mags) > 0) {
-  print(extra_in_mags)
-} else {
-  cat("None\n")
-}
-
-# Shared samples
-shared_samples <- intersect(meta_samples, mags_samples)
-cat("\nShared samples (present in both):", length(shared_samples), "\n")
-
-# Diagnostic summary
-cat("\n=== DIAGNOSTIC SUMMARY ===\n")
-cat("Total expected (from metadata):", length(meta_samples), "\n")
-cat("Present in MAGs phyloseq:", length(mags_samples), "\n")
-cat("Missing from MAGs:", length(missing_in_mags), "\n")
-cat("Extra in MAGs (not in metadata):", length(extra_in_mags), "\n")
-cat("Overlap (shared):", length(shared_samples), "\n\n")
-
-# Check if MAGs phyloseq might have filtered out samples with zero reads
-cat("=== CHECKING FOR ZERO-READ SAMPLES ===\n")
-if (any(sample_sums(ps_mags) == 0)) {
-  zero_read_samples <- sample_names(ps_mags)[sample_sums(ps_mags) == 0]
-  cat("Samples in MAGs with zero total reads:", length(zero_read_samples), "\n")
-  cat("These would be present in MAGs but have no data:\n")
-  print(zero_read_samples)
-} else {
-  cat("No samples in MAGs have zero reads.\n")
-}
-
-# Create a comparison table for all samples
-cat("\n=== COMPREHENSIVE COMPARISON TABLE ===\n")
-all_samples <- unique(c(meta_samples, mags_samples))
-comparison_df <- data.frame(
-  Sample = all_samples,
-  In_Metadata = all_samples %in% meta_samples,
-  In_MAGs = all_samples %in% mags_samples,
-  Status = ifelse(all_samples %in% meta_samples & all_samples %in% mags_samples, "Shared",
-                  ifelse(all_samples %in% meta_samples & !all_samples %in% mags_samples, "Only in Metadata",
-                         "Only in MAGs"))
+saveRDS(hm_phyloseq_joint, '/RSF_res_4_ps/hm3/RSF_ps_humann_joint.rds')
+saveRDS(hm_phyloseq, '/RSF_res_4_ps/hm3/RSF_ps_humann.rds')
+hm_phyloseq_joint <- readRDS('/RSF_res_4_ps/hm3/RSF_ps_humann_joint.rds')
+# Exact pathway IDs to remove (based on our earlier reasoning)
+exact_ids <- c(
+  "P621-PWY",                # nylon-6 oligomer degradation
+  "PWY-7723",                # bacterial bioluminescence
+  "PWY-7399",                # methylphosphonate degradation II
+  "PWY-7820",                # teichuronic acid biosynthesis (B. subtilis)
+  "PWY-7385",                # engineered 1,3-propanediol
+  "PWY-7391",                # engineered isoprene II
+  "PWY-7396",                # engineered butanol/isobutanol
+  "PWY-7392",                # engineered taxadiene
+  "P125-PWY",                # superpathway of (R,R)-butanediol (engineered variant)
+  "PWY-6863",                # pyruvate fermentation to hexanol (engineered)
+  "PWY-6876",                # isopropanol biosynthesis (engineered)
+  "PWY-6883",                # pyruvate fermentation to butanol II (engineered)
+  "PWY-7111",                # pyruvate fermentation to isobutanol (engineered)
+  "PWY-6920",                # 6-gingerol analog biosynthesis (engineered)
+  "PWY-7165",                # L-ascorbate biosynthesis VIII (engineered)
+  "PWY-7218",                # photosynthetic 3-hydroxybutanoate (engineered)
+  "PWY-6716"                 # (if any others you spot)
 )
 
-# Add sample sums from MAGs for context
-if (exists("ps_mags") && nsamples(ps_mags) > 0) {
-  mags_sample_sums <- sample_sums(ps_mags)
-  comparison_df$MAGs_Read_Sum <- ifelse(comparison_df$Sample %in% names(mags_sample_sums),
-                                        mags_sample_sums[comparison_df$Sample], 0)
-}
+# Keywords for pattern-based filtering (case-insensitive)
+exclude_keywords <- c(
+  "engineered",
+  "photosynthesis",
+  "bioluminescence",
+  "nylon",
+  "atrazine",
+  "biphenyl",
+  "methanogenesis",
+  "methanol oxidation",
+  "acetylene degradation",
+  "octane oxidation",
+  "toluene degradation",
+  "chlorobenzoate",
+  "nitrobenzoate",
+  "salicylate degradation",
+  "glyphosate",
+  "phosphonate",
+  "teichuronic",
+  "archaeol",
+  "archaetidylinositol",
+  "chlorophyll",
+  "ergosterol",
+  "taxadiene",
+  "gingerol",
+  "mandelate",
+  "petroselinate",
+  "stearate biosynthesis (animals)",  # animal-specific
+  "very long chain fatty acid biosynthesis I",  # eukaryote-specific
+  "C4 photosynthetic",
+  "Calvin-Benson",
+  "Rubisco",
+  "oxygenic photosynthesis",
+  "photosynthetic hydrogen",
+  "reductive TCA cycle (obligate autotrophs)",
+  "formaldehyde assimilation",
+  "assimilatory sulfate reduction",   # if not core gut
+  "methanogenesis from acetate",
+  "methanogenesis from H2 and CO2",
+  "coenzyme M biosynthesis",
+  "factor 420 biosynthesis",
+  "tetrahydromethanopterin",
+  "methyl-coenzyme M",
+  "urea cycle"  # often not microbiome-specific
+)
+# Get current taxa names
+taxa_vec <- taxa_names(hm_phyloseq_joint)
 
-# Sort for easier viewing: shared first, then only in metadata, then only in MAGs
-comparison_df <- comparison_df[order(match(comparison_df$Status, c("Shared", "Only in Metadata", "Only in MAGs")),
-                                     comparison_df$Sample), ]
+# Create a logical vector: keep taxa that are NOT in exact_ids and do NOT match any keyword
+keep <- !(taxa_vec %in% exact_ids) &
+        !grepl(paste(exclude_keywords, collapse = "|"), taxa_vec, ignore.case = TRUE)
 
-# Show summary counts
-cat("\nStatus counts:\n")
-print(table(comparison_df$Status))
+# Prune the phyloseq object
+hm_phyloseq_filtered <- prune_taxa(keep, hm_phyloseq_joint)
 
-# Show only missing samples (Only in Metadata) for debugging
-missing_df <- comparison_df[comparison_df$Status == "Only in Metadata", ]
-cat("\n=== DETAILED VIEW OF MISSING SAMPLES ===")
-cat("\nTotal missing from MAGs:", nrow(missing_df), "\n")
-if (nrow(missing_df) > 0) {
-  print(missing_df)
-}
-
-# Save detailed comparison to file
-write.csv(comparison_df, "mags_vs_metadata_comparison.csv", row.names = FALSE)
-cat("\nDetailed comparison saved to 'mags_vs_metadata_comparison.csv'\n")
-
-# Check for common issues in missing sample names
-cat("\n=== ANALYZING MISSING SAMPLE NAMES ===\n")
-if (length(missing_in_mags) > 0) {
-  # Check for pattern differences
-  cat("Checking for naming pattern differences...\n")
-  
-  # Example: Are missing samples named differently (e.g., different prefixes)?
-  # Look at first few characters to see if there's a pattern
-  if (length(missing_in_mags) >= 5) {
-    cat("First 5 missing samples:\n")
-    print(head(missing_in_mags, 5))
-    
-    # Compare with first 5 MAGs samples
-    cat("\nFirst 5 MAGs samples:\n")
-    print(head(mags_samples, 5))
-  }
-  
-  # Check if missing samples have special characters that might cause issues
-  cat("\nChecking for special characters in missing samples:\n")
-  special_chars <- c("-", "_", ".", " ", ":", ";", "(", ")", "[", "]")
-  
-  has_special <- sapply(missing_in_mags, function(x) {
-    any(sapply(special_chars, function(char) grepl(char, x, fixed = TRUE)))
-  })
-  
-  if (any(has_special)) {
-    cat("Missing samples with special characters:\n")
-    print(missing_in_mags[has_special])
-  } else {
-    cat("No obvious special character issues found.\n")
-  }
-  
-  # Check if case sensitivity might be an issue
-  cat("\nChecking for case sensitivity issues...\n")
-  lower_meta <- tolower(meta_samples)
-  lower_mags <- tolower(mags_samples)
-  
-  # Find samples that match when ignoring case
-  case_insensitive_matches <- intersect(lower_meta, lower_mags)
-  
-  # Check if any missing samples match MAGs samples when ignoring case
-  potential_case_issues <- missing_in_mags[tolower(missing_in_mags) %in% lower_mags]
-  if (length(potential_case_issues) > 0) {
-    cat("Potential case sensitivity issues (match when ignoring case):\n")
-    for (sample in potential_case_issues) {
-      mags_match <- mags_samples[tolower(mags_samples) == tolower(sample)]
-      cat(sprintf("  Metadata: '%s' might match MAGs: '%s'\n", sample, mags_match))
-    }
-  } else {
-    cat("No obvious case sensitivity issues.\n")
-  }
-}
-
-# Suggestions for next steps
-cat("\n=== SUGGESTED NEXT STEPS ===\n")
-cat("1. Check if MAGs data was originally generated for only a subset of samples.\n")
-cat("2. Verify if sample names in MAGs files match metadata exactly.\n")
-cat("3. Consider if samples were filtered out during MAGs processing (e.g., low quality).\n")
-cat("4. Check the MAGs processing pipeline logs for these missing samples.\n\n")
-
-cat("5. To create a phyloseq with all metadata samples (including missing ones):\n")
-cat("   # Add empty entries for missing samples\n")
-cat("   all_samples <- rownames(expanded_meta)\n")
-cat("   mags_otu <- otu_table(ps_mags)\n")
-cat("   \n")
-cat("   # Create empty matrix for missing samples\n")
-cat("   missing_samples <- setdiff(all_samples, sample_names(ps_mags))\n")
-cat("   if (length(missing_samples) > 0) {\n")
-cat("     # Get taxa from MAGs\n")
-cat("     taxa <- taxa_names(ps_mags)\n")
-cat("     n_taxa <- length(taxa)\n")
-cat("     \n")
-cat("     # Create zero matrix for missing samples\n")
-cat("     zero_mat <- matrix(0, nrow = n_taxa, ncol = length(missing_samples))\n")
-cat("     rownames(zero_mat) <- taxa\n")
-cat("     colnames(zero_mat) <- missing_samples\n")
-cat("     \n")
-cat("     # Merge with existing OTU table\n")
-cat("     merged_otu <- cbind(as.matrix(mags_otu), zero_mat)\n")
-cat("     \n")
-cat("     # Create new phyloseq object\n")
-cat("     new_ps <- phyloseq(\n")
-cat("       otu_table(merged_otu, taxa_are_rows = TRUE),\n")
-cat("       tax_table(ps_mags),\n")
-cat("       sample_data(expanded_meta)\n")
-cat("     )\n")
-cat("   }\n")
+# Check how many were removed
+cat("Original taxa count:", length(taxa_vec), "\n")
+cat("Filtered taxa count:", ntaxa(hm_phyloseq_filtered), "\n")
+cat("Removed:", length(taxa_vec) - ntaxa(hm_phyloseq_filtered), "pathways\n")
+saveRDS(hm_phyloseq_filtered, '/RSF_res_4_ps/hm3/RSF_ps_humann_joint_V2.rds')
 ```
-
 #phyloseq creation for batch comparison
 ```{r}
-meta2 <- read.csv('/home/sonec_iv/RSF_res_4_ps/meta_dups_samples_batch_check.csv',
+meta2 <- read.csv('/RSF_res_4_ps/meta_dups_samples_batch_check.csv',
                         header = TRUE, 
                         #sep = "\t", 
                         row.names = 1, 
                         check.names = FALSE, 
                         comment.char = "")
-otu_table <- read.table("/home/sonec_iv/RSF_res_4_ps/RSF_dups_samples_batch_check/RSF_dups_samples_batch_check_mpa.out", 
+otu_table <- read.table("/RSF_res_4_ps/RSF_dups_samples_batch_check/RSF_dups_samples_batch_check_mpa.out", 
                         header = TRUE, 
                         sep = "\t", 
                         row.names = 1, 
                         check.names = FALSE, 
                         comment.char = "")
-otu_table2 <- read.table("/home/sonec_iv/RSF_res_4_ps/RSF_dups_samples_batch_check/RSF_dups_samples_batch_check_mpa.out", 
+otu_table2 <- read.table("/RSF_res_4_ps/RSF_dups_samples_batch_check/RSF_dups_samples_batch_check_mpa.out", 
                         header = TRUE, 
                         sep = "\t", 
                         #row.names = 1, 
@@ -953,8 +681,8 @@ SAMPLES <- sample_data(meta2)
 # Create the phyloseq object
 physeq <- phyloseq(OTU, TAX, SAMPLES)
 physeq <- subset_taxa(physeq, !(Kingdom %in% c("UNCLASSIFIED","Archaea", "Eukaryota")))
-saveRDS(physeq, '/home/sonec_iv/RSF_res_4_ps/RSF_dups_samples_batch_check_all_physeq_wgs.rds')
-physeq <- readRDS('/home/sonec_iv/RSF_res_4_ps/RSF_dups_samples_batch_check_all_physeq_wgs.rds')
+saveRDS(physeq, '/RSF_res_4_ps/RSF_dups_samples_batch_check_all_physeq_wgs.rds')
+physeq <- readRDS('/RSF_res_4_ps/RSF_dups_samples_batch_check_all_physeq_wgs.rds')
 # Check the object
 physeq@tax_table
 cat("\nNumber of taxa:", ntaxa(physeq))
